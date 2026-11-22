@@ -7,6 +7,12 @@ TorrServer.
 
 ![JacCollector на NVIDIA SHIELD](screenshots/main.png)
 
+| Серверы и настройки | Общий список серверов |
+|---|---|
+| ![Список серверов](screenshots/list.png) | ![Общий список](screenshots/shared-list.png) |
+| **Добавление источника** | **Поддержать автора** |
+| ![Добавить источник](screenshots/add.png) | ![Поддержать автора](screenshots/donate.png) |
+
 ## Зачем
 
 - **Быстро.** Свой Jackett ищет на трекерах «вживую» на каждый запрос (5–60 с). JacRed отдаёт
