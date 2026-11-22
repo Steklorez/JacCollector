@@ -195,17 +195,18 @@ class MainActivity : Activity() {
         val known = r != null && r.boxes >= Community.MIN_BOXES
         val score = if (known) r!!.score else 0
         val color = when {
-            !known -> Color.rgb(140, 145, 150)
+            !known -> Color.TRANSPARENT // keeps the column width, draws nothing
             score >= 7 -> Color.rgb(110, 210, 120)
             score >= 4 -> Color.rgb(240, 160, 60)
             else -> Color.rgb(230, 90, 80)
         }
         // solid blocks touch each other: a short even bar, drawn a bit smaller than the text
         sb.append("█".repeat(score))
-        sb.setSpan(ForegroundColorSpan(color), 0, sb.length, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
+        if (score > 0) sb.setSpan(ForegroundColorSpan(color), 0, sb.length, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
         val gray = sb.length
         sb.append("█".repeat(10 - score))
-        sb.setSpan(ForegroundColorSpan(Color.rgb(70, 75, 80)), gray, sb.length, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
+        sb.setSpan(ForegroundColorSpan(if (known) Color.rgb(70, 75, 80) else Color.TRANSPARENT),
+            gray, sb.length, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
         sb.setSpan(android.text.style.RelativeSizeSpan(0.6f), 0, sb.length, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
         val num = sb.length
         sb.append((if (known) "$score/10" else "").padStart(6))
@@ -221,7 +222,13 @@ class MainActivity : Activity() {
     private fun cardTitle(src: Source, mark: String): CharSequence {
         val name = cardTitleText(src)
         if (!src.isPublic) return "$mark  $name"
-        val r = Community.ratings(this)[Store.normalizeUrl(src.url).lowercase()]
+        // no column at all until at least one server in the list has a rating
+        val ratings = Community.ratings(this)
+        val anyRated = Store.sources(this).any { s ->
+            s.isPublic && (ratings[Store.normalizeUrl(s.url).lowercase()]?.boxes ?: 0) >= Community.MIN_BOXES
+        }
+        if (!anyRated) return "$mark  $name"
+        val r = ratings[Store.normalizeUrl(src.url).lowercase()]
         return SpannableStringBuilder("$mark  ").append(ratingText(r)).append(" ").append(name)
     }
 
@@ -419,12 +426,14 @@ class MainActivity : Activity() {
                         { -(rating(it)?.score ?: -1) },
                         { -(rating(it)?.boxes ?: 0) }))
                 val have = Store.sources(this).map { Store.normalizeUrl(it.url).lowercase() }.toSet()
+                val anyRated = entries.any { rating(it) != null }
                 val labels: Array<CharSequence> = entries.map { e ->
                     val mark = if (e.url.lowercase() in have) "✅" else "➕"
                     val star = if (e.recommended) "  ⭐" else ""
                     val dead = if (e.dead) "  💀" else ""
-                    SpannableStringBuilder("$mark  ").append(ratingText(rating(e)))
-                        .append(" ${e.name}   [${Store.flags(e.lang.split(','))}]$star$dead")
+                    SpannableStringBuilder("$mark  ")
+                        .append(if (anyRated) SpannableStringBuilder(ratingText(rating(e))).append(" ") else "")
+                        .append("${e.name}   [${Store.flags(e.lang.split(','))}]$star$dead")
                 }.toTypedArray()
                 AlertDialog.Builder(this)
                     .setTitle("🌐 Общий список: ✅ используется · ➕ добавить · ⭐ рекомендуем · 💀 не работает")
