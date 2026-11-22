@@ -13,8 +13,8 @@ android {
         applicationId = "com.jaccollector"
         minSdk = 21
         targetSdk = 35
-        versionCode = 5
-        versionName = "1.1.2"
+        versionCode = 6
+        versionName = "1.1.3"
         // Where the public list lives. Override for tests: build.cmd release -PlistUrl=http://...
         val listUrl = (project.findProperty("listUrl") as String?)
             ?: "https://raw.githubusercontent.com/Steklorez/JacCollector/main/sources.json"
