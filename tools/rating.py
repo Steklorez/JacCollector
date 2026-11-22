@@ -33,9 +33,11 @@ def token() -> str:
 def reports(tok: str):
     url = f"https://firestore.googleapis.com/v1/projects/{PROJECT}/databases/(default)/documents:runQuery"
     body = json.dumps({"structuredQuery": {"from": [{"collectionId": "reports", "allDescendants": True}]}})
-    req = urllib.request.Request(url, data=body.encode(), method="POST", headers={
-        "Authorization": "Bearer " + tok, "Content-Type": "application/json",
-        "x-goog-user-project": PROJECT})
+    headers = {"Authorization": "Bearer " + tok, "Content-Type": "application/json"}
+    if os.environ.get("FIRESTORE_TOKEN"):
+        # a personal gcloud login needs the billing/quota project named; the service account must not
+        headers["x-goog-user-project"] = PROJECT
+    req = urllib.request.Request(url, data=body.encode(), method="POST", headers=headers)
     with urllib.request.urlopen(req, timeout=60) as r:
         for row in json.load(r):
             d = row.get("document")
