@@ -22,7 +22,7 @@ if not exist "%ROOT%.tmp" mkdir "%ROOT%.tmp"
 set "TASK=assembleDebug"
 if /i "%~1"=="release" set "TASK=assembleRelease"
 
-call "%GRADLE_BAT%" -p "%ROOT%." "-Dorg.gradle.jvmargs=-Xmx2048m -Dfile.encoding=UTF-8 %TMPDIR_OPT%" "-Dkotlin.daemon.jvmargs=-Xmx1536m %TMPDIR_OPT%" %TASK% %2 %3
+call "%GRADLE_BAT%" -p "%ROOT%." "-Dorg.gradle.jvmargs=-Xmx2048m -Dfile.encoding=UTF-8 %TMPDIR_OPT%" "-Dkotlin.daemon.jvmargs=-Xmx1536m %TMPDIR_OPT%" %TASK% %2 %3 %4 %5
 if errorlevel 1 (
   echo BUILD FAILED
   exit /b 1

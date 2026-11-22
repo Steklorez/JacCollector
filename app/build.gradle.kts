@@ -13,8 +13,9 @@ android {
         applicationId = "com.jaccollector"
         minSdk = 21
         targetSdk = 35
-        versionCode = 6
-        versionName = "1.1.3"
+        // overridable only for update tests: -PvCode=... -PvName=...
+        versionCode = (project.findProperty("vCode") as String?)?.toInt() ?: 7
+        versionName = (project.findProperty("vName") as String?) ?: "1.1.4"
         // Where the public list lives. Override for tests: build.cmd release -PlistUrl=http://...
         val listUrl = (project.findProperty("listUrl") as String?)
             ?: "https://raw.githubusercontent.com/Steklorez/JacCollector/main/sources.json"
@@ -22,6 +23,9 @@ android {
         val ratingsUrl = (project.findProperty("ratingsUrl") as String?)
             ?: "https://raw.githubusercontent.com/Steklorez/JacCollector/stats/ratings.json"
         buildConfigField("String", "RATINGS_URL", "\"$ratingsUrl\"")
+        val updateBase = (project.findProperty("updateBase") as String?)
+            ?: "https://github.com/Steklorez/JacCollector"
+        buildConfigField("String", "UPDATE_BASE", "\"$updateBase\"")
     }
     buildFeatures {
         buildConfig = true

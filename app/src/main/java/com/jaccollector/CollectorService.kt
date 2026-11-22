@@ -52,6 +52,7 @@ class CollectorService : Service() {
                 Thread.sleep(15_000) // let the network come up after boot
                 while (true) {
                     Community.syncIfDue(app)
+                    Updater.checkInBackground(app) // once a day, downloads a newer version right away
                     Thread.sleep(3 * 60 * 60 * 1000L)
                 }
             } catch (_: InterruptedException) {}

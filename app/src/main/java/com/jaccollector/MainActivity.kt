@@ -42,6 +42,8 @@ class MainActivity : Activity() {
     private lateinit var catalogBtn: Button
     private lateinit var syncInfo: TextView
     private lateinit var communityBox: CheckBox
+    private lateinit var updateBtn: Button
+    private var updatePulse: android.animation.ValueAnimator? = null
     private val statusViews = HashMap<String, TextView>()
     private val titleViews = HashMap<String, TextView>()
 
@@ -62,7 +64,17 @@ class MainActivity : Activity() {
             setPadding(dp(32), dp(24), dp(32), dp(24))
             setBackgroundColor(Color.rgb(18, 24, 33))
         }
-        root.addView(text("JacCollector", 26f, Color.WHITE))
+        // title on the left, the "update" badge in the right corner (hidden until there is one)
+        val top = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+        }
+        top.addView(text("JacCollector", 26f, Color.WHITE).apply {
+            layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
+        })
+        updateBtn = updateBadge()
+        top.addView(updateBtn)
+        root.addView(top)
         root.addView(text(
             "Собирает раздачи с публичных JacRed и отдаёт их плеерам на этой приставке.\n" +
                 "В NUM: «Адрес Jackett» = http://127.0.0.1:${Store.PORT}, «API Key» — любой.",
@@ -110,7 +122,8 @@ class MainActivity : Activity() {
                 "регистрации и личных данных, нужен, чтобы каждую приставку учитывать один раз).\n" +
                 "Выключено: ничего не отправляется и не скачивается, но и пользоваться можно только " +
                 "личными серверами (домашними или с API-ключом).\n" +
-                "Поисковые запросы, домашние адреса и ключи не отправляются никогда.",
+                "Поисковые запросы, домашние адреса и ключи не отправляются никогда.\n" +
+                "Обновления приложения проверяются на GitHub раз в сутки независимо от этой настройки.",
             12f, Color.GRAY))
         syncInfo = text("", 13f, Color.rgb(150, 160, 170))
         root.addView(syncInfo)
@@ -134,6 +147,7 @@ class MainActivity : Activity() {
     override fun onResume() {
         super.onResume()
         ui.post(ticker)
+        Updater.checkInBackground(this, everyMs = 6 * 60 * 60 * 1000L) // also when the app is opened
     }
 
     override fun onPause() {
@@ -532,6 +546,7 @@ class MainActivity : Activity() {
     // ---------- status ----------
 
     private fun refreshStatus() {
+        showUpdate()
         val srv = CollectorService.server
         serverText.text = when {
             srv?.error != null -> "Ошибка сервера: ${srv.error}"
@@ -617,6 +632,50 @@ class MainActivity : Activity() {
             addState(intArrayOf(android.R.attr.state_pressed), focused)
             addState(intArrayOf(), shape(normal, 0, 0))
         }
+    }
+
+    // ---------- self-update ----------
+
+    /** Blinking badge "⬆ Обновить до X": colors flow between orange and green. */
+    private fun updateBadge(): Button {
+        val fill = GradientDrawable().apply { cornerRadius = dp(18).toFloat(); setColor(Color.rgb(245, 124, 0)) }
+        val focused = GradientDrawable().apply {
+            cornerRadius = dp(18).toFloat()
+            setColor(Color.rgb(30, 136, 229))
+            setStroke(dp(3), Color.WHITE)
+        }
+        val b = button("") { onUpdatePressed() }
+        b.background = StateListDrawable().apply {
+            addState(intArrayOf(android.R.attr.state_focused), focused)
+            addState(intArrayOf(android.R.attr.state_pressed), focused)
+            addState(intArrayOf(), fill)
+        }
+        b.visibility = View.GONE
+        updatePulse = android.animation.ValueAnimator.ofArgb(Color.rgb(245, 124, 0), Color.rgb(67, 160, 71)).apply {
+            duration = 900
+            repeatMode = android.animation.ValueAnimator.REVERSE
+            repeatCount = android.animation.ValueAnimator.INFINITE
+            addUpdateListener { fill.setColor(it.animatedValue as Int) }
+        }
+        return b
+    }
+
+    private fun showUpdate() {
+        val r = Updater.ready(this)
+        if (r == null) {
+            if (updateBtn.visibility != View.GONE) { updateBtn.visibility = View.GONE; updatePulse?.cancel() }
+            return
+        }
+        updateBtn.text = "⬆ Обновить до ${r.version}"
+        if (updateBtn.visibility != View.VISIBLE) {
+            updateBtn.visibility = View.VISIBLE
+            updatePulse?.start()
+        }
+    }
+
+    private fun onUpdatePressed() {
+        val hint = try { Updater.install(this) } catch (e: Exception) { "Не удалось начать установку: ${e.message}" }
+        if (hint != null) Toast.makeText(this, hint, Toast.LENGTH_LONG).show()
     }
 
     private fun growOnFocus(v: View) {
