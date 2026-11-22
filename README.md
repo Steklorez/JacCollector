@@ -5,6 +5,8 @@
 Jackett**. Отдельный сервер, ПК или Docker не нужны — всё работает прямо на приставке рядом с
 TorrServer.
 
+![JacCollector на NVIDIA SHIELD](screenshots/main.png)
+
 ## Зачем
 
 - **Быстро.** Свой Jackett ищет на трекерах «вживую» на каждый запрос (5–60 с). JacRed отдаёт
