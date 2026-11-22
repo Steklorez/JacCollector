@@ -10,6 +10,7 @@ on:
 
 permissions:
   contents: write   # needed only to push the "stats" branch
+  actions: write    # needed only to keep this schedule switched on (step "Keep alive")
 
 concurrency:
   group: rating
@@ -42,3 +43,9 @@ jobs:
           git add ratings.json
           git commit -q -m "Rating $(date -u +%Y-%m-%d)"
           git push -q --force "https://x-access-token:${{ github.token }}@github.com/${{ github.repository }}.git" stats
+      # GitHub switches scheduled workflows off after 60 days without commits. Re-enabling it
+      # through the API on every run resets that timer, so the rating keeps updating by itself.
+      - name: Keep alive
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh api -X PUT "repos/${{ github.repository }}/actions/workflows/rating.yml/enable"
