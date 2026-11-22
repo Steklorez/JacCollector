@@ -25,11 +25,9 @@ TorrServer.
 
 ![JacCollector на NVIDIA SHIELD](screenshots/main.png)
 
-| Серверы и настройки | Общий список серверов |
-|---|---|
-| ![Список серверов](screenshots/list.png) | ![Общий список](screenshots/shared-list.png) |
-| **Добавление источника** | **Поддержать автора** |
-| ![Добавить источник](screenshots/add.png) | ![Поддержать автора](screenshots/donate.png) |
+| Серверы и настройки | Общий список серверов | Добавление источника |
+|---|---|---|
+| ![Список серверов](screenshots/list.png) | ![Общий список](screenshots/shared-list.png) | ![Добавить источник](screenshots/add.png) |
 
 ## Зачем
 
