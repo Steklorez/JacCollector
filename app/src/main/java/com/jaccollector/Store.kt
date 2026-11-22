@@ -75,7 +75,9 @@ object Store {
     private fun prefs(c: Context) = c.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
 
     fun sources(c: Context): List<Source> {
-        val raw = prefs(c).getString("sources", null) ?: return DEFAULT_SOURCES
+        // a new install with the shared list off starts empty (only the user's own servers)
+        val raw = prefs(c).getString("sources", null)
+            ?: return if (shareEnabled(c)) DEFAULT_SOURCES else emptyList()
         return try {
             val a = JSONArray(raw)
             val defaults = DEFAULT_SOURCES.associateBy { normalizeUrl(it.url).lowercase() }
@@ -100,7 +102,15 @@ object Store {
      * from the public list and in return sends the public addresses the user adds and reports
      * about dead public servers. When off, nothing is sent and nothing is fetched.
      */
-    fun shareEnabled(c: Context): Boolean = prefs(c).getBoolean("share", true)
+    fun shareEnabled(c: Context): Boolean {
+        val p = prefs(c)
+        if (p.contains("share")) return p.getBoolean("share", false)
+        // Off by default since 1.1.2: the user turns it on. Earlier versions had it on by default
+        // without storing it, so an install that has already been used keeps it on after the update.
+        val used = p.contains("sources") || p.contains("lastSync") || p.contains("catalog")
+        p.edit().putBoolean("share", used).apply()
+        return used
+    }
     fun setShareEnabled(c: Context, v: Boolean) = prefs(c).edit().putBoolean("share", v).apply()
 
     /**
