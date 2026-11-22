@@ -108,6 +108,11 @@ build.cmd release    # release APK (подписывается, если ест�
 
 Пути к JDK/Gradle — в `local-env.cmd`, к SDK — в `local.properties` (оба не в git).
 
+## Лицензия
+
+[GNU GPL v3](LICENSE): код можно свободно использовать и изменять, но любые распространяемые
+версии, основанные на нём, тоже должны быть открыты под GPLv3.
+
 ## Отказ от ответственности
 
 Приложение только пересылает поисковые запросы к публичным серверам и не хранит и не раздаёт
@@ -120,4 +125,4 @@ build.cmd release    # release APK (подписывается, если ест�
 results by info-hash and returns them within a deadline. Point your player's Jackett address to
 `http://127.0.0.1:9117` (any API key). An optional shared server list (on by default) brings new
 mirrors and, in return, sends the public server addresses you add and dead-server reports; search
-queries, home addresses and keys are never sent. MIT license.
+queries, home addresses and keys are never sent. Licensed under GPL-3.0.
