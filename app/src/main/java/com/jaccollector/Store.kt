@@ -135,6 +135,14 @@ object Store {
         return true
     }
 
+    /** Saved 429 pause of a server: (until, how many in a row). */
+    fun rateLimit(c: Context, name: String): Pair<Long, Int> {
+        val s = prefs(c).getString("rl_$name", null) ?: return 0L to 0
+        return (s.substringBefore(':').toLongOrNull() ?: 0L) to (s.substringAfter(':').toIntOrNull() ?: 0)
+    }
+    fun setRateLimit(c: Context, name: String, until: Long, count: Int) =
+        prefs(c).edit().putString("rl_$name", "$until:$count").apply()
+
     fun catalogTime(c: Context): Long = prefs(c).getLong("catalogAt", 0)
 
     /** Last copy of the public list, for the catalog screen when offline. */

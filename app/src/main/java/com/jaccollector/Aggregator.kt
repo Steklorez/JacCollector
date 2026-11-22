@@ -21,6 +21,13 @@ class SourceState {
     @Volatile var lastCount = -1
     @Volatile var lastError: String? = null
     @Volatile var lastAt = 0L
+    /** The server answered 429 "slow down": leave it alone until then, even for manual checks. */
+    @Volatile var rateLimitedUntil = 0L
+    /** 429 answers in a row; makes the pause longer each time, reset by a normal answer. */
+    @Volatile var rateLimits = 0
+    @Volatile var rateLoaded = false
+    /** Times of the requests sent in the last minute (own per-server budget). */
+    val recent = ArrayDeque<Long>()
     /** Languages seen in this server's answers ("ru", "uk", "en"), collected over time. */
     val langs: MutableSet<String> = java.util.Collections.synchronizedSet(LinkedHashSet())
 }
@@ -35,7 +42,9 @@ object Aggregator {
     private const val BENCH_MS = 15 * 60 * 1000L
     private const val CACHE_TTL_MS = 30 * 60 * 1000L
     private const val REPEAT_MS = 60 * 1000L
-    private const val RATE_LIMIT_BACKOFF_MS = 10 * 60 * 1000L
+    private val RATE_LIMIT_STEPS_MS = longArrayOf(
+        10 * 60 * 1000L, 30 * 60 * 1000L, 2 * 60 * 60 * 1000L, 6 * 60 * 60 * 1000L)
+    private const val MAX_PER_MINUTE = 12
 
     val states = ConcurrentHashMap<String, SourceState>()
     private val pool = Executors.newCachedThreadPool()
@@ -103,8 +112,32 @@ object Aggregator {
         return if (System.currentTimeMillis() - c.at < maxAgeMs) c.items else null
     }
 
+    /** The server said "too many requests"; [retryAfterSec] from its Retry-After header, 0 if none. */
+    class RateLimited(val retryAfterSec: Long) : Exception("HTTP 429")
+
+    /** We hold back ourselves: this box already sent enough requests to the server this minute. */
+    class LocalLimit : Exception("local limit")
+
+    /** Own budget per server: at most MAX_PER_MINUTE requests in any 60 seconds. */
+    private fun takeToken(st: SourceState): Boolean = synchronized(st.recent) {
+        val now = System.currentTimeMillis()
+        while (st.recent.isNotEmpty() && now - st.recent.first() > 60_000) st.recent.removeFirst()
+        if (st.recent.size >= MAX_PER_MINUTE) return false
+        st.recent.addLast(now)
+        true
+    }
+
     private fun fetch(ctx: Context, src: Source, params: List<Pair<String, String>>, queryKey: String): List<JSONObject> {
         val st = state(src.name)
+        // the 429 pause survives restarts of the app and reboots of the box
+        if (!st.rateLoaded) {
+            st.rateLoaded = true
+            val (until, count) = Store.rateLimit(ctx, src.name)
+            if (until > st.rateLimitedUntil) { st.rateLimitedUntil = until; st.benchedUntil = maxOf(st.benchedUntil, until) }
+            st.rateLimits = maxOf(st.rateLimits, count)
+        }
+        if (st.rateLimitedUntil > System.currentTimeMillis()) throw LocalLimit()
+        if (!takeToken(st)) throw LocalLimit()
         val t0 = System.currentTimeMillis()
         val wasDown = st.failures >= FAILS_TO_BENCH
         try {
@@ -123,18 +156,24 @@ object Aggregator {
             cache[src.name + "|" + queryKey] = Cached(System.currentTimeMillis(), out)
             st.langs.addAll(detectLangs(out))
             st.failures = 0
+            if (st.rateLimits != 0) { st.rateLimits = 0; Store.setRateLimit(ctx, src.name, 0, 0) }
             st.lastError = null
             st.lastCount = out.size
             if (wasDown) Community.reportHealth(ctx, src, true)
             return out
+        } catch (e: RateLimited) {
+            // The server asks us to slow down. Back off, longer each time in a row
+            // (10 min, 30 min, 2 h, 6 h), and never less than its Retry-After. Not a failure:
+            // it never turns into a "dead server" report.
+            st.rateLimits++
+            val step = RATE_LIMIT_STEPS_MS[minOf(st.rateLimits - 1, RATE_LIMIT_STEPS_MS.size - 1)]
+            val wait = maxOf(step, e.retryAfterSec * 1000)
+            st.benchedUntil = System.currentTimeMillis() + wait
+            st.rateLimitedUntil = st.benchedUntil
+            st.lastError = "просит подождать (HTTP 429)"
+            Store.setRateLimit(ctx, src.name, st.rateLimitedUntil, st.rateLimits)
+            throw e
         } catch (e: Exception) {
-            if (e.message == "HTTP 429") {
-                // The server asks us to slow down: back off for a while. Not a failure, so it
-                // never turns into a "dead server" report.
-                st.benchedUntil = System.currentTimeMillis() + RATE_LIMIT_BACKOFF_MS
-                st.lastError = "просит подождать (HTTP 429)"
-                throw e
-            }
             st.failures++
             st.lastError = (e.javaClass.simpleName + ": " + (e.message ?: "")).take(140)
             st.lastCount = -1
@@ -152,7 +191,8 @@ object Aggregator {
     fun probe(ctx: Context) {
         val app = ctx.applicationContext
         val list = Store.sources(ctx).filter { it.enabled || it.communityOff }
-        list.forEach { state(it.name).benchedUntil = 0 }
+        val now = System.currentTimeMillis()
+        list.forEach { val st = state(it.name); if (st.rateLimitedUntil <= now) st.benchedUntil = 0 }
         val fs: List<Future<*>> = list.map { src -> pool.submit { probeOne(app, src) } }
         fs.forEach { try { it.get(30, TimeUnit.SECONDS) } catch (_: Exception) {} }
         // a manual check is a good health sample: report what this box sees
@@ -167,8 +207,10 @@ object Aggregator {
     fun probeNew(ctx: Context, list: List<Source>) {
         if (list.isEmpty()) return
         val app = ctx.applicationContext
+        val now = System.currentTimeMillis()
         list.forEach { src ->
-            state(src.name).benchedUntil = 0
+            val st = state(src.name)
+            if (st.rateLimitedUntil <= now) st.benchedUntil = 0
             pool.submit { probeOne(app, src) }
         }
     }
@@ -178,6 +220,7 @@ object Aggregator {
      * (Russian JacReds return little for "matrix", international ones nothing for "Матрица").
      */
     private fun probeOne(ctx: Context, src: Source) {
+        if (state(src.name).rateLimitedUntil > System.currentTimeMillis()) return
         try { fetch(ctx, src, listOf("Query" to "matrix"), "probe-en") } catch (_: Exception) {}
         try { fetch(ctx, src, listOf("Query" to "Матрица"), "probe-ru") } catch (_: Exception) {}
     }
@@ -212,6 +255,10 @@ object Aggregator {
             c.setRequestProperty("User-Agent", "Mozilla/5.0 (Linux; Android) JacCollector/1.0")
             c.setRequestProperty("Accept", "application/json")
             val code = c.responseCode
+            if (code == 429) {
+                val ra = c.getHeaderField("Retry-After")?.trim()?.toLongOrNull() ?: 0L
+                throw RateLimited(ra.coerceIn(0, 24 * 60 * 60))
+            }
             if (code != 200) throw RuntimeException("HTTP $code")
             val text = c.inputStream.use { it.readBytes().toString(Charsets.UTF_8) }
             if (!text.trimStart().startsWith("{")) throw RuntimeException("not JSON")

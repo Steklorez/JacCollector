@@ -169,7 +169,9 @@ class MainActivity : Activity() {
             card.addView(st)
             sourcesBox.addView(card)
         }
-        if (list.isEmpty()) sourcesBox.addView(text("Список пуст — добавьте источник или выберите серверы в общем списке.",
+        if (list.isEmpty()) sourcesBox.addView(text(
+            if (Store.shareEnabled(this)) "Список пуст — добавьте источник или выберите серверы в общем списке."
+            else "Список пуст — добавьте личный сервер или включите «Пользоваться общим списком» в настройках.",
             14f, Color.GRAY))
         refreshStatus()
     }
@@ -282,6 +284,7 @@ class MainActivity : Activity() {
                         return@setPositiveButton
                     }
                     cur.add(src)
+                    Store.undismiss(this, src.url) // added again by hand: no longer "deleted"
                     Store.saveSources(this, cur)
                     buildSources()
                     Aggregator.probeNew(this, listOf(src))
@@ -481,6 +484,9 @@ class MainActivity : Activity() {
             val (msg, color) = when {
                 src.communityOff -> "не работает по данным других пользователей" to Color.rgb(200, 110, 100)
                 !src.enabled -> "выключен" to Color.rgb(120, 120, 120)
+                st != null && st.rateLimitedUntil > now ->
+                    "отдыхает ${(st.rateLimitedUntil - now) / 60000 + 1} мин — сервер просит подождать (HTTP 429)" to
+                        Color.rgb(230, 120, 100)
                 st == null || st.lastAt == 0L -> "ещё не опрашивался" to Color.rgb(150, 160, 170)
                 st.benchedUntil > now ->
                     "отдыхает ${(st.benchedUntil - now) / 60000 + 1} мин — ${st.lastError}" to Color.rgb(230, 120, 100)

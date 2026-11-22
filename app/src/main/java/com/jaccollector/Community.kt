@@ -100,7 +100,10 @@ object Community {
                 // A domain that points into the home network is somebody's private server.
                 if (!resolvesPublic(URI(base).host)) return@Thread
                 // Quick check from this box, so the collected data says whether it worked here.
-                if (ADULT_WORDS.containsMatchIn(base)) return@Thread
+                if (ADULT_WORDS.containsMatchIn(base)) {
+                    RequestLog.add("not shared $base: 18+")
+                    return@Thread
+                }
                 var results = 0
                 var ru = 0
                 var adult = false
