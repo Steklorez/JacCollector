@@ -1,0 +1,41 @@
+rules_version = '2';
+
+// The app may only add or bump shared source addresses. Nobody can read them from outside;
+// they are collected with the admin SDK (service account), which bypasses these rules.
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    function validUrl(u) {
+      return u is string && u.size() <= 200
+        && u.matches('https?://[a-z0-9-]+[.][a-z0-9.-]+(:[0-9]+)?');
+    }
+
+    function validMeta(d) {
+      return d.v is string && d.v.size() <= 20
+        && d.ok is bool
+        && d.results is int && d.results >= 0 && d.results <= 100000;
+    }
+
+    match /submissions/{id} {
+      allow read, delete: if false;
+
+      allow create: if request.resource.data.keys().hasOnly(['url', 'count', 'firstAt', 'lastAt', 'v', 'ok', 'results'])
+        && validUrl(request.resource.data.url)
+        && request.resource.data.count == 1
+        && request.resource.data.firstAt == request.time
+        && request.resource.data.lastAt == request.time
+        && validMeta(request.resource.data);
+
+      allow update: if request.resource.data.diff(resource.data).affectedKeys()
+          .hasOnly(['count', 'lastAt', 'v', 'ok', 'results'])
+        && request.resource.data.count == resource.data.count + 1
+        && request.resource.data.lastAt == request.time
+        && request.time > resource.data.lastAt + duration.value(60, 's')
+        && validMeta(request.resource.data);
+    }
+
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}

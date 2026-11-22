@@ -57,6 +57,21 @@ object Store {
         prefs(c).edit().putString("sources", a.toString()).apply()
     }
 
+    fun shareEnabled(c: Context): Boolean = prefs(c).getBoolean("share", true)
+    fun setShareEnabled(c: Context, v: Boolean) = prefs(c).edit().putBoolean("share", v).apply()
+
+    fun lastSync(c: Context): Long = prefs(c).getLong("lastSync", 0)
+    fun setLastSync(c: Context, v: Long) = prefs(c).edit().putLong("lastSync", v).apply()
+
+    /** Sources the user deleted; the public list must not bring them back. */
+    fun dismissed(c: Context): Set<String> = prefs(c).getStringSet("dismissed", emptySet()) ?: emptySet()
+    fun dismiss(c: Context, url: String) {
+        val s = HashSet(dismissed(c))
+        s.add(normalizeUrl(url).lowercase())
+        prefs(c).edit().putStringSet("dismissed", s).apply()
+    }
+    fun clearDismissed(c: Context) = prefs(c).edit().remove("dismissed").apply()
+
     fun deadlineMs(c: Context): Int = prefs(c).getInt("deadline", 2500)
     fun setDeadlineMs(c: Context, v: Int) = prefs(c).edit().putInt("deadline", v).apply()
 

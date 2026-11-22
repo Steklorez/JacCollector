@@ -17,6 +17,7 @@ class CollectorService : Service() {
 
     companion object {
         @Volatile var server: HttpServer? = null
+        @Volatile private var syncThread: Thread? = null
         private const val CHANNEL = "collector"
 
         fun start(ctx: Context) {
@@ -33,10 +34,28 @@ class CollectorService : Service() {
             server?.stop()
             server = HttpServer(applicationContext, Store.PORT).also { it.start() }
         }
+        startSyncLoop()
         return START_STICKY
     }
 
+    /** Pulls the public source list once a day (checked every 3 hours). */
+    private fun startSyncLoop() {
+        if (syncThread?.isAlive == true) return
+        val app = applicationContext
+        syncThread = Thread({
+            try {
+                Thread.sleep(15_000) // let the network come up after boot
+                while (true) {
+                    Community.syncIfDue(app)
+                    Thread.sleep(3 * 60 * 60 * 1000L)
+                }
+            } catch (_: InterruptedException) {}
+        }, "public-list").also { it.isDaemon = true; it.start() }
+    }
+
     override fun onDestroy() {
+        syncThread?.interrupt()
+        syncThread = null
         server?.stop()
         server = null
         super.onDestroy()

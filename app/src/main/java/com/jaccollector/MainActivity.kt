@@ -65,6 +65,7 @@ class MainActivity : Activity() {
         row2.addView(button("Добавить источник") { addSourceDialog() })
         row2.addView(button("Вернуть стандартный список") {
             Store.saveSources(this, Store.DEFAULT_SOURCES)
+            Store.clearDismissed(this)
             buildSources()
         })
         root.addView(row2)
@@ -72,6 +73,41 @@ class MainActivity : Activity() {
         root.addView(text("Последние запросы", 20f, Color.WHITE).apply { setPadding(0, dp(16), 0, dp(4)) })
         logText = text("", 13f, Color.rgb(170, 180, 190))
         root.addView(logText)
+
+        // ---------- settings (bottom of the screen) ----------
+        root.addView(text("Настройки", 20f, Color.WHITE).apply { setPadding(0, dp(24), 0, dp(4)) })
+        root.addView(CheckBox(this).apply {
+            text = "Отправлять добавленные публичные адреса в общий список"
+            textSize = 15f
+            setTextColor(Color.WHITE)
+            isChecked = Store.shareEnabled(this@MainActivity)
+            setOnCheckedChangeListener { _, checked -> Store.setShareEnabled(this@MainActivity, checked) }
+        })
+        root.addView(text(
+            "Уходит только адрес сервера (например https://jacred.su) и работает ли он. " +
+                "Домашние адреса, адреса с ключами и поисковые запросы не отправляются никогда.",
+            12f, Color.GRAY))
+        val syncInfo = text("", 13f, Color.rgb(150, 160, 170))
+        fun showSync() {
+            val t = Store.lastSync(this)
+            syncInfo.text = "Общий список обновляется раз в сутки" + if (t > 0)
+                ", последний раз: " + java.text.SimpleDateFormat("dd.MM HH:mm", java.util.Locale.US)
+                    .format(java.util.Date(t)) else ""
+        }
+        showSync()
+        root.addView(button("Обновить общий список сейчас") {
+            syncInfo.text = "Обновляю…"
+            Thread {
+                val n = Community.syncNow(applicationContext)
+                ui.post {
+                    buildSources()
+                    showSync()
+                    if (n < 0) syncInfo.text = "Не удалось скачать общий список"
+                    else if (n > 0) syncInfo.text = syncInfo.text.toString() + " · добавлено: $n"
+                }
+            }.start()
+        })
+        root.addView(syncInfo)
 
         setContentView(ScrollView(this).apply { addView(root) })
         buildSources()
@@ -116,6 +152,7 @@ class MainActivity : Activity() {
             line.addView(button("Удалить") {
                 val cur = Store.sources(this).toMutableList()
                 if (index < cur.size) {
+                    Store.dismiss(this, cur[index].url)
                     cur.removeAt(index)
                     Store.saveSources(this, cur)
                     buildSources()
@@ -141,6 +178,10 @@ class MainActivity : Activity() {
         val key = EditText(this).apply { hint = "API key (только для своего Jackett, можно пусто)" }
         box.addView(url)
         box.addView(key)
+        if (Store.shareEnabled(this)) {
+            box.addView(text("Публичные адреса попадают в общий список (отключить — в настройках внизу).",
+                12f, Color.GRAY))
+        }
         AlertDialog.Builder(this)
             .setTitle("Новый источник")
             .setView(box)
@@ -150,9 +191,11 @@ class MainActivity : Activity() {
                     val base = Store.normalizeUrl(u)
                     val name = base.substringAfter("://")
                     val cur = Store.sources(this).toMutableList()
-                    cur.add(Source(name, base, true, key.text.toString().trim()))
+                    val src = Source(name, base, true, key.text.toString().trim())
+                    cur.add(src)
                     Store.saveSources(this, cur)
                     buildSources()
+                    Community.shareInBackground(this, src)
                 }
             }
             .setNegativeButton("Отмена", null)
