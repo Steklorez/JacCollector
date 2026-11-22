@@ -1,0 +1,44 @@
+# Once a day: rebuild the shared server rating from the health reports and publish it as
+# ratings.json on the "stats" branch (the app downloads it from raw.githubusercontent.com).
+# It only reads Firestore (read-only key) and replaces that one file; nothing else is touched.
+name: rating
+
+on:
+  schedule:
+    - cron: "17 3 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: write   # needed only to push the "stats" branch
+
+concurrency:
+  group: rating
+  cancel-in-progress: false
+
+jobs:
+  rating:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          sparse-checkout: tools
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install --quiet google-auth requests
+      - name: Build ratings.json
+        env:
+          FIREBASE_SA: ${{ secrets.FIREBASE_SA }}
+        run: |
+          mkdir out
+          python tools/rating.py out/ratings.json
+      - name: Publish to the stats branch
+        run: |
+          cd out
+          git init -q -b stats
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add ratings.json
+          git commit -q -m "Rating $(date -u +%Y-%m-%d)"
+          git push -q --force "https://x-access-token:${{ github.token }}@github.com/${{ github.repository }}.git" stats
