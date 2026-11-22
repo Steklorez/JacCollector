@@ -29,6 +29,7 @@ class CollectorService : Service() {
     override fun onBind(intent: Intent?): IBinder? = null
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        Tls.init(applicationContext) // Let's Encrypt root for Android < 7.1.1
         goForeground()
         synchronized(CollectorService::class.java) {
             // onStartCommand comes from the screen, boot and updates, often several times in a row:

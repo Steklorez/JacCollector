@@ -51,6 +51,7 @@ class MainActivity : Activity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        Tls.init(applicationContext) // Let's Encrypt root for Android < 7.1.1
         CollectorService.start(this)
 
         val root = LinearLayout(this).apply {
