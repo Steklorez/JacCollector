@@ -22,6 +22,8 @@ object Community {
         "https://firestore.googleapis.com/v1/projects/$PROJECT/databases/(default)/documents:commit"
     private const val DOC_PREFIX = "projects/$PROJECT/databases/(default)/documents/submissions/"
     val LIST_URL: String = BuildConfig.LIST_URL
+    /** Shared rating, rebuilt daily from the health reports by a GitHub Action (branch "stats"). */
+    val RATINGS_URL: String = BuildConfig.RATINGS_URL
     private const val SYNC_EVERY_MS = 24 * 60 * 60 * 1000L
     private const val CATALOG_TTL_MS = 10 * 60 * 1000L
 
@@ -91,8 +93,8 @@ object Community {
         if (!Store.shareEnabled(ctx) || !isShareable(src)) return
         val app = ctx.applicationContext
         val base0 = baseOf(src.url) ?: return
-        // the same address once a day, and at most a few addresses a day from one box
-        if (!Store.allow(app, "share:$base0", 24 * 60 * 60 * 1000L)) return
+        // the same address once every 12 hours, and at most a few addresses a day from one box
+        if (!Store.allow(app, "share:$base0", 12 * 60 * 60 * 1000L)) return
         if (!Store.takeDaily(app, "shares", MAX_SHARES_PER_DAY)) return
         Thread {
             try {
@@ -134,7 +136,7 @@ object Community {
                     RequestLog.add("not shared $base: 18+ trackers")
                     return@Thread
                 }
-                submit(base, true, results, ru, deviceLang(), versionName(app))
+                submit(app, base, results, ru, deviceLang(), versionName(app))
             } catch (e: Exception) {
                 RequestLog.add("share failed: ${e.message}")
             }
@@ -168,45 +170,42 @@ object Community {
     /** System language, e.g. "ru", "en", "uk". */
     fun deviceLang(): String = java.util.Locale.getDefault().language.lowercase().take(5)
 
-    private fun submit(base: String, ok: Boolean, results: Int, ru: Int, lang: String, version: String) {
-        val id = base.replace("://", "_").replace(':', '_')
-        val name = DOC_PREFIX + id
-        val meta = JSONObject()
+    private fun submit(ctx: Context, base: String, results: Int, ru: Int, lang: String, version: String) {
+        // One record per install and address: submissions/{address}/by/{uid}. Sending the same
+        // address again overwrites this install's own record, so one install cannot inflate counts.
+        val fields = JSONObject()
+            .put("url", JSONObject().put("stringValue", base))
             .put("v", JSONObject().put("stringValue", version.take(20)))
-            .put("ok", JSONObject().put("booleanValue", ok))
             .put("results", JSONObject().put("integerValue", results.coerceIn(0, 100000).toString()))
             .put("ru", JSONObject().put("integerValue", ru.coerceIn(0, 100000).toString()))
             .put("lang", JSONObject().put("stringValue", lang))
-
-        // 1) first time: create the document
-        val createFields = JSONObject(meta.toString())
-            .put("url", JSONObject().put("stringValue", base))
-            .put("count", JSONObject().put("integerValue", "1"))
-        val create = JSONObject().put("writes", JSONArray().put(JSONObject()
-            .put("update", JSONObject().put("name", name).put("fields", createFields))
-            .put("currentDocument", JSONObject().put("exists", false))
-            .put("updateTransforms", JSONArray()
-                .put(JSONObject().put("fieldPath", "firstAt").put("setToServerValue", "REQUEST_TIME"))
-                .put(JSONObject().put("fieldPath", "lastAt").put("setToServerValue", "REQUEST_TIME")))))
-        val code = post(COMMIT_URL, create.toString())
-        if (code == 200) {
-            RequestLog.add("shared $base")
-            return
-        }
-        // 2) already there: bump the counter
-        val bump = JSONObject().put("writes", JSONArray().put(JSONObject()
-            .put("update", JSONObject().put("name", name).put("fields", meta))
-            .put("updateMask", JSONObject().put("fieldPaths",
-                JSONArray().put("v").put("ok").put("results").put("ru").put("lang")))
-            .put("currentDocument", JSONObject().put("exists", true))
-            .put("updateTransforms", JSONArray()
-                .put(JSONObject().put("fieldPath", "count").put("increment", JSONObject().put("integerValue", "1")))
-                .put(JSONObject().put("fieldPath", "lastAt").put("setToServerValue", "REQUEST_TIME")))))
-        val code2 = post(COMMIT_URL, bump.toString())
-        RequestLog.add(if (code2 == 200) "shared $base (again)" else "share $base: HTTP $code/$code2")
+        val code = upsert(ctx, { uid -> DOC_PREFIX + docId(base) + "/by/" + uid }, fields)
+        RequestLog.add(if (code == 200) "shared $base" else "share $base: HTTP $code")
     }
 
-    private fun post(url: String, json: String): Int {
+    /** Address -> document id, e.g. https://jacred.su -> https_jacred.su */
+    private fun docId(base: String) = base.replace("://", "_").replace(':', '_')
+
+    /**
+     * Create or overwrite this install's own document ([name] gets the anonymous uid);
+     * "at" is set to the server time. Returns the HTTP code, -1 when not signed in.
+     */
+    private fun upsert(ctx: Context, name: (String) -> String, fields: JSONObject): Int {
+        repeat(2) { attempt ->
+            val s = Auth.session(ctx) ?: return -1
+            val body = JSONObject().put("writes", JSONArray().put(JSONObject()
+                .put("update", JSONObject().put("name", name(s.uid)).put("fields", fields))
+                .put("updateTransforms", JSONArray()
+                    .put(JSONObject().put("fieldPath", "at").put("setToServerValue", "REQUEST_TIME")))))
+            val code = post(COMMIT_URL, body.toString(), s.token)
+            // token expired early (clock off, revoked): refresh once and retry
+            if (code != 401 || attempt == 1) return code
+            Auth.invalidate(ctx)
+        }
+        return -1
+    }
+
+    private fun post(url: String, json: String, token: String): Int {
         val c = URL(url).openConnection() as HttpURLConnection
         return try {
             c.connectTimeout = 8000
@@ -214,6 +213,7 @@ object Community {
             c.requestMethod = "POST"
             c.doOutput = true
             c.setRequestProperty("Content-Type", "application/json; charset=utf-8")
+            c.setRequestProperty("Authorization", "Bearer $token")
             c.outputStream.use { it.write(json.toByteArray()) }
             val code = c.responseCode
             try { (if (code < 400) c.inputStream else c.errorStream)?.close() } catch (_: Exception) {}
@@ -260,13 +260,42 @@ object Community {
         return Catalog(list, removed)
     }
 
+    /**
+     * Rating of one server from the reports of different boxes over the last days:
+     * [score] 0..10 = share of boxes where it worked, [boxes] = how many boxes reported.
+     */
+    class Rating(val score: Int, val boxes: Int)
+
+    /** Minimum number of different boxes for a rating to be shown. */
+    const val MIN_BOXES = 3
+
+    /** url (lower case, no trailing slash) -> rating, from the last downloaded ratings.json. */
+    fun ratings(ctx: Context): Map<String, Rating> = try {
+        val o = JSONObject(Store.ratingsCache(ctx) ?: "{}").optJSONObject("servers") ?: JSONObject()
+        val out = HashMap<String, Rating>()
+        for (k in o.keys()) {
+            val r = o.optJSONObject(k) ?: continue
+            out[Store.normalizeUrl(k).lowercase()] = Rating(r.optInt("score", 0).coerceIn(0, 10), r.optInt("boxes", 0))
+        }
+        out
+    } catch (e: Exception) { emptyMap() }
+
+    /** Downloads ratings.json (together with the public list). Quietly keeps the old copy on failure. */
+    private fun refreshRatings(ctx: Context) {
+        try {
+            val t = getText(RATINGS_URL)
+            JSONObject(t) // must parse
+            Store.setRatingsCache(ctx, t)
+        } catch (_: Exception) {}
+    }
+
     /** The public list for the catalog screen (network, or the last copy when offline). */
     fun catalog(ctx: Context): Catalog? {
         val cached = Store.catalogCache(ctx)
         // the list changes rarely: download it at most every 10 minutes
         val fresh = cached != null && System.currentTimeMillis() - Store.catalogTime(ctx) < CATALOG_TTL_MS
         val text = if (fresh) cached else try {
-            getText(LIST_URL).also { Store.setCatalogCache(ctx, it) }
+            getText(LIST_URL).also { Store.setCatalogCache(ctx, it); refreshRatings(ctx) }
         } catch (e: Exception) {
             cached
         } ?: return null
@@ -293,6 +322,7 @@ object Community {
             val text = getText(LIST_URL)
             val cat = parse(text)
             Store.setCatalogCache(ctx, text)
+            refreshRatings(ctx)
             val byUrl = cat.entries.associateBy { it.url.lowercase() }
             val dismissed = Store.dismissed(ctx)
             val myLang = deviceLang()
@@ -346,11 +376,11 @@ object Community {
     // ---------- health reports ----------
 
     private const val HEALTH_PREFIX = "projects/$PROJECT/databases/(default)/documents/health/"
-    private const val REPORT_EVERY_MS = 24 * 60 * 60 * 1000L
+    private const val REPORT_EVERY_MS = 12 * 60 * 60 * 1000L
 
     /**
      * Tells the shared database that a server from the public list stopped (or started)
-     * answering here. At most once a day per server per box; only public-list servers.
+     * answering here. At most once every 12 hours per server per box; only public-list servers.
      */
     fun reportHealth(ctx: Context, src: Source, ok: Boolean) {
         if (!Store.shareEnabled(ctx) || !src.isPublic || !isShareable(src)) return
@@ -362,29 +392,13 @@ object Community {
         val app = ctx.applicationContext
         Thread {
             try {
-                val name = HEALTH_PREFIX + base.replace("://", "_").replace(':', '_')
-                val counter = if (ok) "ok" else "fail"
-                val stamp = if (ok) "lastOkAt" else "lastFailAt"
-                val create = JSONObject().put("writes", JSONArray().put(JSONObject()
-                    .put("update", JSONObject().put("name", name).put("fields", JSONObject()
-                        .put("url", JSONObject().put("stringValue", base))
-                        .put("ok", JSONObject().put("integerValue", if (ok) "1" else "0"))
-                        .put("fail", JSONObject().put("integerValue", if (ok) "0" else "1"))))
-                    .put("currentDocument", JSONObject().put("exists", false))
-                    .put("updateTransforms", JSONArray()
-                        .put(JSONObject().put("fieldPath", "lastAt").put("setToServerValue", "REQUEST_TIME"))
-                        .put(JSONObject().put("fieldPath", stamp).put("setToServerValue", "REQUEST_TIME")))))
-                var code = post(COMMIT_URL, create.toString())
-                if (code != 200) {
-                    val bump = JSONObject().put("writes", JSONArray().put(JSONObject()
-                        .put("transform", JSONObject().put("document", name).put("fieldTransforms", JSONArray()
-                            .put(JSONObject().put("fieldPath", counter).put("increment",
-                                JSONObject().put("integerValue", "1")))
-                            .put(JSONObject().put("fieldPath", "lastAt").put("setToServerValue", "REQUEST_TIME"))
-                            .put(JSONObject().put("fieldPath", stamp).put("setToServerValue", "REQUEST_TIME"))))
-                        .put("currentDocument", JSONObject().put("exists", true))))
-                    code = post(COMMIT_URL, bump.toString())
-                }
+                // One record per install and server: health/{server}/reports/{uid}. The server
+                // side counts how many DIFFERENT installs see it alive or down.
+                val fields = JSONObject()
+                    .put("url", JSONObject().put("stringValue", base))
+                    .put("ok", JSONObject().put("booleanValue", ok))
+                    .put("v", JSONObject().put("stringValue", versionName(app).take(20)))
+                val code = upsert(app, { uid -> HEALTH_PREFIX + docId(base) + "/reports/" + uid }, fields)
                 if (code != 200) Store.setLastReport(app, base, 0) // retry later
                 RequestLog.add("health ${src.name}: ${if (ok) "ok" else "down"} ${if (code == 200) "sent" else "HTTP $code"}")
             } catch (e: Exception) {

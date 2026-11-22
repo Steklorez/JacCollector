@@ -143,6 +143,14 @@ object Store {
     fun setRateLimit(c: Context, name: String, until: Long, count: Int) =
         prefs(c).edit().putString("rl_$name", "$until:$count").apply()
 
+    /** Learned gap between requests to a server that dislikes bursts, ms (0 = no limit). */
+    fun gap(c: Context, name: String): Long = prefs(c).getLong("gap_$name", 0)
+    fun setGap(c: Context, name: String, v: Long) = prefs(c).edit().putLong("gap_$name", v).apply()
+
+    /** Last copy of the shared rating (ratings.json). */
+    fun ratingsCache(c: Context): String? = prefs(c).getString("ratings", null)
+    fun setRatingsCache(c: Context, v: String) = prefs(c).edit().putString("ratings", v).apply()
+
     fun catalogTime(c: Context): Long = prefs(c).getLong("catalogAt", 0)
 
     /** Last copy of the public list, for the catalog screen when offline. */

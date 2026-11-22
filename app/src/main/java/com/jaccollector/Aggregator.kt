@@ -21,11 +21,24 @@ class SourceState {
     @Volatile var lastCount = -1
     @Volatile var lastError: String? = null
     @Volatile var lastAt = 0L
+    /** Last good answer / last failure (not counting 429), for the 12-hourly health summary. */
+    @Volatile var lastOkAt = 0L
+    @Volatile var lastFailAt = 0L
     /** The server answered 429 "slow down": leave it alone until then, even for manual checks. */
     @Volatile var rateLimitedUntil = 0L
     /** 429 answers in a row; makes the pause longer each time, reset by a normal answer. */
     @Volatile var rateLimits = 0
     @Volatile var rateLoaded = false
+    /**
+     * Careful mode for servers that answer 429 to bursts: at least this many ms between two
+     * requests to this server (0 = no limit). Learned from 429s, eased off after a run of good
+     * answers, kept across restarts.
+     */
+    @Volatile var gapMs = 0L
+    /** Earliest time the next request to this server may go (careful mode). */
+    @Volatile var nextSlot = 0L
+    /** Good answers in a row since the gap last changed. */
+    @Volatile var goodStreak = 0
     /** Times of the requests sent in the last minute (own per-server budget). */
     val recent = ArrayDeque<Long>()
     /** Languages seen in this server's answers ("ru", "uk", "en"), collected over time. */
@@ -42,9 +55,18 @@ object Aggregator {
     private const val BENCH_MS = 15 * 60 * 1000L
     private const val CACHE_TTL_MS = 30 * 60 * 1000L
     private const val REPEAT_MS = 60 * 1000L
+    // Pause after 429s in a row. The first one is short: usually the server only disliked a burst,
+    // and careful mode (below) already spaces the next requests out.
     private val RATE_LIMIT_STEPS_MS = longArrayOf(
-        10 * 60 * 1000L, 30 * 60 * 1000L, 2 * 60 * 60 * 1000L, 6 * 60 * 60 * 1000L)
+        60 * 1000L, 10 * 60 * 1000L, 30 * 60 * 1000L, 2 * 60 * 60 * 1000L, 6 * 60 * 60 * 1000L)
     private const val MAX_PER_MINUTE = 12
+
+    // Careful mode: gap after the first 429, its ceiling, and how many good answers ease it off.
+    private const val GAP_START_MS = 2000L
+    private const val GAP_MAX_MS = 15000L
+    private const val GAP_EASE_AFTER = 30
+    /** A request that would have to queue longer than this is dropped (the answer would be late anyway). */
+    private const val MAX_QUEUE_MS = 6000L
 
     val states = ConcurrentHashMap<String, SourceState>()
     private val pool = Executors.newCachedThreadPool()
@@ -104,7 +126,25 @@ object Aggregator {
                 .put("Error", if (status == "ok") JSONObject.NULL else status))
         }
         val sorted = merged.values.sortedByDescending { it.optInt("Seeders", 0) }
+        healthSummary(app, all)
         return Answer(sorted, report)
+    }
+
+    /**
+     * Feeds the shared rating: for each public server in use, "worked here" if it gave a good
+     * answer in the last 12 hours, "down here" if it is failing now and gave none. Each server is
+     * reported at most every 12 hours (Community.reportHealth), so this is cheap to call on every search.
+     */
+    private fun healthSummary(ctx: Context, sources: List<Source>) {
+        val since = System.currentTimeMillis() - 12 * 60 * 60 * 1000L
+        for (src in sources) {
+            if (!src.isPublic) continue
+            val st = states[src.name] ?: continue
+            when {
+                st.lastOkAt > since -> Community.reportHealth(ctx, src, true)
+                st.lastFailAt > since && st.failures >= FAILS_TO_BENCH -> Community.reportHealth(ctx, src, false)
+            }
+        }
     }
 
     private fun fromCache(src: Source, queryKey: String, maxAgeMs: Long = CACHE_TTL_MS): List<JSONObject>? {
@@ -118,13 +158,31 @@ object Aggregator {
     /** We hold back ourselves: this box already sent enough requests to the server this minute. */
     class LocalLimit : Exception("local limit")
 
-    /** Own budget per server: at most MAX_PER_MINUTE requests in any 60 seconds. */
+    /**
+     * Own budget per server: at most MAX_PER_MINUTE requests in any 60 seconds, fewer in
+     * careful mode (one per gap).
+     */
     private fun takeToken(st: SourceState): Boolean = synchronized(st.recent) {
         val now = System.currentTimeMillis()
         while (st.recent.isNotEmpty() && now - st.recent.first() > 60_000) st.recent.removeFirst()
-        if (st.recent.size >= MAX_PER_MINUTE) return false
+        val max = if (st.gapMs > 0) minOf(MAX_PER_MINUTE.toLong(), 60_000 / st.gapMs).toInt() else MAX_PER_MINUTE
+        if (st.recent.size >= max) return false
         st.recent.addLast(now)
         true
+    }
+
+    /**
+     * Careful mode: requests to the server go one at a time with [SourceState.gapMs] between
+     * them. Returns how long to wait before sending, or -1 to drop the request (too long a queue:
+     * several searches at once, e.g. a player asking for the title, the original title and the year).
+     */
+    private fun takeSlot(st: SourceState): Long = synchronized(st) {
+        if (st.gapMs <= 0) return 0
+        val now = System.currentTimeMillis()
+        val at = maxOf(now, st.nextSlot)
+        if (at - now > MAX_QUEUE_MS) return -1
+        st.nextSlot = at + st.gapMs
+        at - now
     }
 
     private fun fetch(ctx: Context, src: Source, params: List<Pair<String, String>>, queryKey: String): List<JSONObject> {
@@ -135,8 +193,13 @@ object Aggregator {
             val (until, count) = Store.rateLimit(ctx, src.name)
             if (until > st.rateLimitedUntil) { st.rateLimitedUntil = until; st.benchedUntil = maxOf(st.benchedUntil, until) }
             st.rateLimits = maxOf(st.rateLimits, count)
+            st.gapMs = maxOf(st.gapMs, Store.gap(ctx, src.name))
         }
         if (st.rateLimitedUntil > System.currentTimeMillis()) throw LocalLimit()
+        val wait = takeSlot(st)
+        if (wait < 0) throw LocalLimit()
+        if (wait > 0) Thread.sleep(wait)
+        if (st.rateLimitedUntil > System.currentTimeMillis()) throw LocalLimit() // 429 while queued
         if (!takeToken(st)) throw LocalLimit()
         val t0 = System.currentTimeMillis()
         val wasDown = st.failures >= FAILS_TO_BENCH
@@ -156,7 +219,14 @@ object Aggregator {
             cache[src.name + "|" + queryKey] = Cached(System.currentTimeMillis(), out)
             st.langs.addAll(detectLangs(out))
             st.failures = 0
+            st.lastOkAt = System.currentTimeMillis()
             if (st.rateLimits != 0) { st.rateLimits = 0; Store.setRateLimit(ctx, src.name, 0, 0) }
+            // careful mode eases off slowly: after a long run of good answers the gap shrinks a bit
+            if (st.gapMs > 0 && ++st.goodStreak >= GAP_EASE_AFTER) {
+                st.goodStreak = 0
+                st.gapMs = (st.gapMs * 3 / 4).let { if (it < 1000) 0 else it }
+                Store.setGap(ctx, src.name, st.gapMs)
+            }
             st.lastError = null
             st.lastCount = out.size
             if (wasDown) Community.reportHealth(ctx, src, true)
@@ -166,6 +236,10 @@ object Aggregator {
             // (10 min, 30 min, 2 h, 6 h), and never less than its Retry-After. Not a failure:
             // it never turns into a "dead server" report.
             st.rateLimits++
+            // from now on space the requests to this server out (wider after each 429)
+            st.gapMs = if (st.gapMs <= 0) GAP_START_MS else minOf(st.gapMs * 2, GAP_MAX_MS)
+            st.goodStreak = 0
+            Store.setGap(ctx, src.name, st.gapMs)
             val step = RATE_LIMIT_STEPS_MS[minOf(st.rateLimits - 1, RATE_LIMIT_STEPS_MS.size - 1)]
             val wait = maxOf(step, e.retryAfterSec * 1000)
             st.benchedUntil = System.currentTimeMillis() + wait
@@ -175,6 +249,7 @@ object Aggregator {
             throw e
         } catch (e: Exception) {
             st.failures++
+            st.lastFailAt = System.currentTimeMillis()
             st.lastError = (e.javaClass.simpleName + ": " + (e.message ?: "")).take(140)
             st.lastCount = -1
             if (st.failures >= FAILS_TO_BENCH) st.benchedUntil = System.currentTimeMillis() + BENCH_MS

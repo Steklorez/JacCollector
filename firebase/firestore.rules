@@ -14,6 +14,56 @@ service cloud.firestore {
 
     function validMeta(d) {
       return d.v is string && d.v.size() <= 20
+        && d.results is int && d.results >= 0 && d.results <= 100000
+        && d.ru is int && d.ru >= 0 && d.ru <= 100000
+        && d.lang is string && d.lang.size() <= 5;
+    }
+
+    // The record must belong to the server it is filed under (https://jacred.su -> https_jacred.su).
+    function urlMatches(id, u) {
+      return id == u.replace('://', '_').replace(':', '_');
+    }
+
+    // At most one write per install and record every 12 hours (create, or overwrite own record).
+    function onceADay() {
+      return resource == null || request.time > resource.data.at + duration.value(12, 'h');
+    }
+
+    // Since 1.1.2: one record per install, filed under the install's anonymous Firebase Auth uid.
+    // The uid is signed by Google, so a box can only write its own records and cannot invent ids;
+    // the admin side counts distinct installs.
+    function isOwner(iid) {
+      return request.auth != null && request.auth.uid == iid;
+    }
+
+    match /submissions/{id}/by/{iid} {
+      allow read, delete: if false;
+      allow create, update: if isOwner(iid)
+        && request.resource.data.keys().hasOnly(['url', 'v', 'results', 'ru', 'lang', 'at'])
+        && validUrl(request.resource.data.url)
+        && urlMatches(id, request.resource.data.url)
+        && request.resource.data.at == request.time
+        && validMeta(request.resource.data)
+        && onceADay();
+    }
+
+    match /health/{id}/reports/{iid} {
+      allow read, delete: if false;
+      allow create, update: if isOwner(iid)
+        && request.resource.data.keys().hasOnly(['url', 'ok', 'v', 'at'])
+        && validUrl(request.resource.data.url)
+        && urlMatches(id, request.resource.data.url)
+        && request.resource.data.ok is bool
+        && request.resource.data.v is string && request.resource.data.v.size() <= 20
+        && request.resource.data.at == request.time
+        && onceADay();
+    }
+
+    // LEGACY (1.1.0-1.1.1): shared counters with "+1". Still accepted because old versions stay
+    // installed for a long time; to be closed later. Limited to one +1 per server per minute (submissions)
+    // or 5 seconds (health) across all users.
+    function validMetaLegacy(d) {
+      return d.v is string && d.v.size() <= 20
         && d.ok == true
         && d.results is int && d.results >= 0 && d.results <= 100000
         && d.ru is int && d.ru >= 0 && d.ru <= 100000
@@ -22,26 +72,22 @@ service cloud.firestore {
 
     match /submissions/{id} {
       allow read, delete: if false;
-
       allow create: if request.resource.data.keys().hasOnly(['url', 'count', 'firstAt', 'lastAt', 'v', 'ok', 'results', 'ru', 'lang'])
         && validUrl(request.resource.data.url)
         && request.resource.data.count == 1
         && request.resource.data.firstAt == request.time
         && request.resource.data.lastAt == request.time
-        && validMeta(request.resource.data);
-
+        && validMetaLegacy(request.resource.data);
       allow update: if request.resource.data.diff(resource.data).affectedKeys()
           .hasOnly(['count', 'lastAt', 'v', 'ok', 'results', 'ru', 'lang'])
         && request.resource.data.count == resource.data.count + 1
         && request.resource.data.lastAt == request.time
         && request.time > resource.data.lastAt + duration.value(60, 's')
-        && validMeta(request.resource.data);
+        && validMetaLegacy(request.resource.data);
     }
 
-    // Health of servers from the public list, reported by boxes: +1 to "ok" or "fail".
     match /health/{id} {
       allow read, delete: if false;
-
       allow create: if request.resource.data.keys().hasOnly(['url', 'ok', 'fail', 'lastAt', 'lastOkAt', 'lastFailAt'])
         && validUrl(request.resource.data.url)
         && request.resource.data.lastAt == request.time
@@ -51,7 +97,6 @@ service cloud.firestore {
           || (request.resource.data.ok == 0 && request.resource.data.fail == 1
               && request.resource.data.lastFailAt == request.time
               && !('lastOkAt' in request.resource.data)));
-
       allow update: if request.resource.data.lastAt == request.time
         && request.time > resource.data.lastAt + duration.value(5, 's')
         && ((request.resource.data.diff(resource.data).affectedKeys().hasOnly(['ok', 'lastAt', 'lastOkAt'])

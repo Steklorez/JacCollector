@@ -11,6 +11,9 @@ import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
 import android.text.InputType
+import android.text.SpannableStringBuilder
+import android.text.Spanned
+import android.text.style.ForegroundColorSpan
 import android.view.Gravity
 import android.view.View
 import android.widget.Button
@@ -103,7 +106,8 @@ class MainActivity : Activity() {
             "Включено: вы получаете серверы из общего списка, а взамен в общий список " +
                 "уходят публичные адреса, которые вы добавляете (только рабочие), и отметки о том, " +
                 "что сервер из общего списка перестал отвечать. Уходит только адрес сервера, сколько " +
-                "на нём русских раздач и язык системы.\n" +
+                "на нём русскоязычных раздач, язык системы и анонимный номер установки от Firebase (без " +
+                "регистрации и личных данных, нужен, чтобы каждую приставку учитывать один раз).\n" +
                 "Выключено: ничего не отправляется и не скачивается, но и пользоваться можно только " +
                 "личными серверами (домашними или с API-ключом).\n" +
                 "Поисковые запросы, домашние адреса и ключи не отправляются никогда.",
@@ -181,7 +185,47 @@ class MainActivity : Activity() {
      * "✅  jacred.su   🇷🇺 🇺🇦": languages seen in the server's answers; until it answered,
      * the languages from the public list. 🔑 marks a server with an API key, 🏠 a personal one.
      */
-    private fun cardTitle(src: Source, mark: String): String {
+    /**
+     * Shared rating as a fixed-width column, so that it lines up from row to row:
+     * "██████████  8/10  (35)". Bar green 7-10, orange 4-6, red 0-3; dark bar with "–" until
+     * enough different boxes have reported. Numbers are monospace and padded.
+     */
+    private fun ratingText(r: Community.Rating?): CharSequence {
+        val sb = SpannableStringBuilder()
+        val known = r != null && r.boxes >= Community.MIN_BOXES
+        val score = if (known) r!!.score else 0
+        val color = when {
+            !known -> Color.rgb(140, 145, 150)
+            score >= 7 -> Color.rgb(110, 210, 120)
+            score >= 4 -> Color.rgb(240, 160, 60)
+            else -> Color.rgb(230, 90, 80)
+        }
+        // solid blocks touch each other: a short even bar, drawn a bit smaller than the text
+        sb.append("█".repeat(score))
+        sb.setSpan(ForegroundColorSpan(color), 0, sb.length, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
+        val gray = sb.length
+        sb.append("█".repeat(10 - score))
+        sb.setSpan(ForegroundColorSpan(Color.rgb(70, 75, 80)), gray, sb.length, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
+        sb.setSpan(android.text.style.RelativeSizeSpan(0.6f), 0, sb.length, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
+        val num = sb.length
+        sb.append((if (known) "$score/10" else "").padStart(6))
+        sb.setSpan(ForegroundColorSpan(color), num, sb.length, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
+        val cnt = sb.length
+        sb.append((if (known) " (${r!!.boxes})" else "").padEnd(6))
+        sb.setSpan(ForegroundColorSpan(Color.rgb(150, 155, 160)), cnt, sb.length, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
+        sb.setSpan(android.text.style.TypefaceSpan("monospace"), num, sb.length, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
+        return sb
+    }
+
+    /** "✅  ██████████  8/10  (35)  jacred.su  [рус]": the rating column right after the mark. */
+    private fun cardTitle(src: Source, mark: String): CharSequence {
+        val name = cardTitleText(src)
+        if (!src.isPublic) return "$mark  $name"
+        val r = Community.ratings(this)[Store.normalizeUrl(src.url).lowercase()]
+        return SpannableStringBuilder("$mark  ").append(ratingText(r)).append(" ").append(name)
+    }
+
+    private fun cardTitleText(src: Source): String {
         val seen = Aggregator.states[src.name]?.langs?.toList().orEmpty()
         val langs = seen.ifEmpty { src.lang.split(',').filter { it.isNotBlank() } }
         val tag = when {
@@ -190,7 +234,7 @@ class MainActivity : Activity() {
             else -> ""
         }
         val f = Store.flags(langs.sortedBy { listOf("ru", "uk", "en").indexOf(it).let { i -> if (i < 0) 9 else i } })
-        return "$mark  ${src.name}$tag" + if (f.isNotEmpty()) "     [$f]" else ""
+        return "${src.name}$tag" + if (f.isNotEmpty()) "     [$f]" else ""
     }
 
     /** Actions for one server; its name is in the title and on the delete button. */
@@ -364,15 +408,23 @@ class MainActivity : Activity() {
                     return@post
                 }
                 val myLang = Community.deviceLang()
+                val ratings = Community.ratings(this)
+                fun rating(e: Community.Entry) = ratings[e.url.lowercase()]?.takeIf { it.boxes >= Community.MIN_BOXES }
+                // language first (own language on top), then the best rated; dead and unrated last
                 val entries = cat.entries
                     .filter { it.url.lowercase() !in cat.removed }
-                    .sortedBy { Store.priority(Source(it.name, it.url, lang = it.lang), myLang) }
+                    .sortedWith(compareBy<Community.Entry>(
+                        { Store.priority(Source(it.name, it.url, lang = it.lang), myLang) },
+                        { if (it.dead) 1 else 0 },
+                        { -(rating(it)?.score ?: -1) },
+                        { -(rating(it)?.boxes ?: 0) }))
                 val have = Store.sources(this).map { Store.normalizeUrl(it.url).lowercase() }.toSet()
-                val labels = entries.map { e ->
+                val labels: Array<CharSequence> = entries.map { e ->
                     val mark = if (e.url.lowercase() in have) "✅" else "➕"
                     val star = if (e.recommended) "  ⭐" else ""
-                    val dead = if (e.dead) "  💀 не работает" else ""
-                    "$mark  ${e.name}   [${Store.flags(e.lang.split(','))}]$star$dead"
+                    val dead = if (e.dead) "  💀" else ""
+                    SpannableStringBuilder("$mark  ").append(ratingText(rating(e)))
+                        .append(" ${e.name}   [${Store.flags(e.lang.split(','))}]$star$dead")
                 }.toTypedArray()
                 AlertDialog.Builder(this)
                     .setTitle("🌐 Общий список: ✅ используется · ➕ добавить · ⭐ рекомендуем · 💀 не работает")
@@ -493,6 +545,10 @@ class MainActivity : Activity() {
                     "отдыхает ${(st.benchedUntil - now) / 60000 + 1} мин — ${st.lastError}" to Color.rgb(230, 120, 100)
                 st.lastError != null -> "ошибка: ${st.lastError}" to Color.rgb(230, 170, 90)
                 else -> "работает · ${st.lastCount} шт · ${st.lastMs} мс" to Color.rgb(120, 220, 140)
+            }.let { (m, c) ->
+                // careful mode: this server dislikes bursts, so requests to it are spaced out
+                val gap = st?.gapMs ?: 0
+                (if (gap > 0) "$m · бережно: не чаще раза в ${(gap + 999) / 1000} с" else m) to c
             }
             tv.text = "${src.url}  —  $msg"
             tv.setTextColor(color)
@@ -515,7 +571,7 @@ class MainActivity : Activity() {
 
     private fun dp(v: Int) = (v * resources.displayMetrics.density).toInt()
 
-    private fun text(s: String, size: Float, color: Int) = TextView(this).apply {
+    private fun text(s: CharSequence, size: Float, color: Int) = TextView(this).apply {
         text = s
         textSize = size
         setTextColor(color)
