@@ -30,9 +30,13 @@ class CollectorService : Service() {
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         goForeground()
-        if (server?.running != true) {
-            server?.stop()
-            server = HttpServer(applicationContext, Store.PORT).also { it.start() }
+        synchronized(CollectorService::class.java) {
+            // onStartCommand comes from the screen, boot and updates, often several times in a row:
+            // start one server only, and a new one only if the old one really failed.
+            if (server?.alive != true) {
+                server?.stop()
+                server = HttpServer(applicationContext, Store.PORT).also { it.start() }
+            }
         }
         startSyncLoop()
         return START_STICKY

@@ -1,10 +1,11 @@
 {
-  "version": 1,
+  "version": 3,
   "sources": [
-    { "name": "jr.maxvol.pro", "url": "https://jr.maxvol.pro" },
-    { "name": "jacred.su", "url": "https://jacred.su" },
-    { "name": "jac.red", "url": "https://jac.red" },
-    { "name": "jac.black", "url": "https://jac.black" },
-    { "name": "jacred.xyz", "url": "https://jacred.xyz" }
-  ]
+    { "name": "jac.black", "url": "https://jac.black", "lang": "ru,uk,en", "recommended": true },
+    { "name": "jr.maxvol.pro", "url": "https://jr.maxvol.pro", "lang": "ru", "recommended": true },
+    { "name": "jacred.su", "url": "https://jacred.su", "lang": "ru", "recommended": true },
+    { "name": "jac.red", "url": "https://jac.red", "lang": "ru", "recommended": true },
+    { "name": "jacred.xyz", "url": "https://jacred.xyz", "lang": "ru", "recommended": true, "status": "dead" }
+  ],
+  "removed": []
 }

@@ -7,19 +7,23 @@ service cloud.firestore {
 
     function validUrl(u) {
       return u is string && u.size() <= 200
-        && u.matches('https?://[a-z0-9-]+[.][a-z0-9.-]+(:[0-9]+)?');
+        && u.matches('https?://[a-z0-9-]+[.][a-z0-9.-]+(:[0-9]+)?')
+        // adult addresses are not collected
+        && !u.matches('.*(porn|xxx|sex|hentai|nsfw|adult|erot).*');
     }
 
     function validMeta(d) {
       return d.v is string && d.v.size() <= 20
-        && d.ok is bool
-        && d.results is int && d.results >= 0 && d.results <= 100000;
+        && d.ok == true
+        && d.results is int && d.results >= 0 && d.results <= 100000
+        && d.ru is int && d.ru >= 0 && d.ru <= 100000
+        && d.lang is string && d.lang.size() <= 5;
     }
 
     match /submissions/{id} {
       allow read, delete: if false;
 
-      allow create: if request.resource.data.keys().hasOnly(['url', 'count', 'firstAt', 'lastAt', 'v', 'ok', 'results'])
+      allow create: if request.resource.data.keys().hasOnly(['url', 'count', 'firstAt', 'lastAt', 'v', 'ok', 'results', 'ru', 'lang'])
         && validUrl(request.resource.data.url)
         && request.resource.data.count == 1
         && request.resource.data.firstAt == request.time
@@ -27,11 +31,35 @@ service cloud.firestore {
         && validMeta(request.resource.data);
 
       allow update: if request.resource.data.diff(resource.data).affectedKeys()
-          .hasOnly(['count', 'lastAt', 'v', 'ok', 'results'])
+          .hasOnly(['count', 'lastAt', 'v', 'ok', 'results', 'ru', 'lang'])
         && request.resource.data.count == resource.data.count + 1
         && request.resource.data.lastAt == request.time
         && request.time > resource.data.lastAt + duration.value(60, 's')
         && validMeta(request.resource.data);
+    }
+
+    // Health of servers from the public list, reported by boxes: +1 to "ok" or "fail".
+    match /health/{id} {
+      allow read, delete: if false;
+
+      allow create: if request.resource.data.keys().hasOnly(['url', 'ok', 'fail', 'lastAt', 'lastOkAt', 'lastFailAt'])
+        && validUrl(request.resource.data.url)
+        && request.resource.data.lastAt == request.time
+        && ((request.resource.data.ok == 1 && request.resource.data.fail == 0
+              && request.resource.data.lastOkAt == request.time
+              && !('lastFailAt' in request.resource.data))
+          || (request.resource.data.ok == 0 && request.resource.data.fail == 1
+              && request.resource.data.lastFailAt == request.time
+              && !('lastOkAt' in request.resource.data)));
+
+      allow update: if request.resource.data.lastAt == request.time
+        && request.time > resource.data.lastAt + duration.value(5, 's')
+        && ((request.resource.data.diff(resource.data).affectedKeys().hasOnly(['ok', 'lastAt', 'lastOkAt'])
+              && request.resource.data.ok == resource.data.ok + 1
+              && request.resource.data.lastOkAt == request.time)
+          || (request.resource.data.diff(resource.data).affectedKeys().hasOnly(['fail', 'lastAt', 'lastFailAt'])
+              && request.resource.data.fail == resource.data.fail + 1
+              && request.resource.data.lastFailAt == request.time));
     }
 
     match /{document=**} {

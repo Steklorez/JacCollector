@@ -21,6 +21,8 @@ class SourceState {
     @Volatile var lastCount = -1
     @Volatile var lastError: String? = null
     @Volatile var lastAt = 0L
+    /** Languages seen in this server's answers ("ru", "uk", "en"), collected over time. */
+    val langs: MutableSet<String> = java.util.Collections.synchronizedSet(LinkedHashSet())
 }
 
 /**
@@ -32,6 +34,8 @@ object Aggregator {
     private const val FAILS_TO_BENCH = 3
     private const val BENCH_MS = 15 * 60 * 1000L
     private const val CACHE_TTL_MS = 30 * 60 * 1000L
+    private const val REPEAT_MS = 60 * 1000L
+    private const val RATE_LIMIT_BACKOFF_MS = 10 * 60 * 1000L
 
     val states = ConcurrentHashMap<String, SourceState>()
     private val pool = Executors.newCachedThreadPool()
@@ -56,7 +60,16 @@ object Aggregator {
         val queryKey = params.sortedWith(compareBy({ it.first }, { it.second }))
             .joinToString("&") { it.first + "=" + it.second }
 
-        val futures = active.map { src -> src to pool.submit<List<JSONObject>> { fetch(src, params, queryKey) } }
+        val app = ctx.applicationContext
+        // Anti-spam toward the public servers: a query repeated within a minute (players often
+        // repeat, or a user mashes search) is answered from memory instead of asking every server again.
+        val futures = active.map { src ->
+            val recent = fromCache(src, queryKey, REPEAT_MS)
+            val f: Future<List<JSONObject>> = if (recent != null)
+                java.util.concurrent.FutureTask { recent }.also { it.run() } // ready at once (API 21-safe)
+            else pool.submit<List<JSONObject>> { fetch(app, src, params, queryKey) }
+            src to f
+        }
         val deadline = now + Store.deadlineMs(ctx)
 
         val merged = LinkedHashMap<String, JSONObject>()
@@ -85,14 +98,15 @@ object Aggregator {
         return Answer(sorted, report)
     }
 
-    private fun fromCache(src: Source, queryKey: String): List<JSONObject>? {
+    private fun fromCache(src: Source, queryKey: String, maxAgeMs: Long = CACHE_TTL_MS): List<JSONObject>? {
         val c = cache[src.name + "|" + queryKey] ?: return null
-        return if (System.currentTimeMillis() - c.at < CACHE_TTL_MS) c.items else null
+        return if (System.currentTimeMillis() - c.at < maxAgeMs) c.items else null
     }
 
-    private fun fetch(src: Source, params: List<Pair<String, String>>, queryKey: String): List<JSONObject> {
+    private fun fetch(ctx: Context, src: Source, params: List<Pair<String, String>>, queryKey: String): List<JSONObject> {
         val st = state(src.name)
         val t0 = System.currentTimeMillis()
+        val wasDown = st.failures >= FAILS_TO_BENCH
         try {
             val p = ArrayList(params)
             if (src.apiKey.isNotBlank()) p.add("apikey" to src.apiKey)
@@ -107,15 +121,26 @@ object Aggregator {
                 out.add(it)
             }
             cache[src.name + "|" + queryKey] = Cached(System.currentTimeMillis(), out)
+            st.langs.addAll(detectLangs(out))
             st.failures = 0
             st.lastError = null
             st.lastCount = out.size
+            if (wasDown) Community.reportHealth(ctx, src, true)
             return out
         } catch (e: Exception) {
+            if (e.message == "HTTP 429") {
+                // The server asks us to slow down: back off for a while. Not a failure, so it
+                // never turns into a "dead server" report.
+                st.benchedUntil = System.currentTimeMillis() + RATE_LIMIT_BACKOFF_MS
+                st.lastError = "просит подождать (HTTP 429)"
+                throw e
+            }
             st.failures++
             st.lastError = (e.javaClass.simpleName + ": " + (e.message ?: "")).take(140)
             st.lastCount = -1
             if (st.failures >= FAILS_TO_BENCH) st.benchedUntil = System.currentTimeMillis() + BENCH_MS
+            // three failures in a row: tell the shared list (public-list servers only, at most daily)
+            if (st.failures == FAILS_TO_BENCH) Community.reportHealth(ctx, src, false)
             throw e
         } finally {
             st.lastMs = System.currentTimeMillis() - t0
@@ -125,12 +150,57 @@ object Aggregator {
 
     /** One test request per source, used by the "check" button. */
     fun probe(ctx: Context) {
-        val list = Store.sources(ctx).filter { it.enabled }
+        val app = ctx.applicationContext
+        val list = Store.sources(ctx).filter { it.enabled || it.communityOff }
         list.forEach { state(it.name).benchedUntil = 0 }
-        val fs: List<Future<*>> = list.map { src ->
-            pool.submit { try { fetch(src, listOf("Query" to "matrix"), "probe") } catch (_: Exception) {} }
-        }
+        val fs: List<Future<*>> = list.map { src -> pool.submit { probeOne(app, src) } }
         fs.forEach { try { it.get(30, TimeUnit.SECONDS) } catch (_: Exception) {} }
+        // a manual check is a good health sample: report what this box sees
+        list.forEach { src ->
+            val st = state(src.name)
+            // a rate-limited server is alive, it just asked us to wait: no report either way
+            if (st.lastError?.contains("429") != true) Community.reportHealth(app, src, st.lastError == null)
+        }
+    }
+
+    /** Checks freshly added servers right away (in the background), so their status shows at once. */
+    fun probeNew(ctx: Context, list: List<Source>) {
+        if (list.isEmpty()) return
+        val app = ctx.applicationContext
+        list.forEach { src ->
+            state(src.name).benchedUntil = 0
+            pool.submit { probeOne(app, src) }
+        }
+    }
+
+    /**
+     * Test search: a Russian and a Latin query, so the languages of the server show up
+     * (Russian JacReds return little for "matrix", international ones nothing for "Матрица").
+     */
+    private fun probeOne(ctx: Context, src: Source) {
+        try { fetch(ctx, src, listOf("Query" to "matrix"), "probe-en") } catch (_: Exception) {}
+        try { fetch(ctx, src, listOf("Query" to "Матрица"), "probe-ru") } catch (_: Exception) {}
+    }
+
+    private val UK_TRACKERS = Regex("toloka|mazepa|hurtom|uakino|uaserial", RegexOption.IGNORE_CASE)
+    private val INTL_TRACKERS = Regex(
+        "piratebay|yts|1337x|eztv|nyaa|knaben|torrentgalaxy|tgx|limetorrents|rarbg|bitsearch|" +
+            "solidtorrents|kickass|torlock|magnetdl|zooqle|glodls", RegexOption.IGNORE_CASE)
+    private val UK_LETTERS = Regex("[ЇїІіЄєҐґ]")
+    private val CYR = Regex("[А-Яа-яЁё]")
+
+    /** Which audiences a set of releases serves, judged by trackers and title letters. */
+    fun detectLangs(items: List<JSONObject>): Set<String> {
+        val out = LinkedHashSet<String>()
+        for (it in items) {
+            val tracker = it.optString("Tracker", "")
+            val title = it.optString("Title", "")
+            if (UK_TRACKERS.containsMatchIn(tracker) || UK_LETTERS.containsMatchIn(title)) out.add("uk")
+            else if (CYR.containsMatchIn(title)) out.add("ru")
+            if (INTL_TRACKERS.containsMatchIn(tracker)) out.add("en")
+            if (out.size == 3) break
+        }
+        return out
     }
 
     fun httpGet(url: String, connectMs: Int, readMs: Int): String {

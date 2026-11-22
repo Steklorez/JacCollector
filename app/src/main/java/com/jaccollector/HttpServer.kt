@@ -38,30 +38,52 @@ class HttpServer(private val ctx: Context, private val port: Int) {
     private val pool = Executors.newCachedThreadPool()
     @Volatile var error: String? = null
         private set
+    @Volatile private var stopped = false
+    @Volatile private var thread: Thread? = null
 
+    /** Safe to call more than once: only the first call starts the listener. */
+    @Synchronized
     fun start() {
-        Thread({
-            try {
-                val s = ServerSocket()
-                s.reuseAddress = true
-                s.bind(InetSocketAddress(port))
-                server = s
-                error = null
-                while (!s.isClosed) {
-                    val client = try { s.accept() } catch (e: Exception) { break }
-                    pool.execute { handle(client) }
+        if (thread != null) return
+        thread = Thread({
+            // After an app update the old process may still hold the port for a moment: retry.
+            var s: ServerSocket? = null
+            var last: Exception? = null
+            for (attempt in 1..15) {
+                if (stopped) return@Thread
+                try {
+                    s = ServerSocket().apply {
+                        reuseAddress = true
+                        bind(InetSocketAddress(port))
+                    }
+                    break
+                } catch (e: Exception) {
+                    last = e
+                    try { Thread.sleep(1000) } catch (_: InterruptedException) { return@Thread }
                 }
-            } catch (e: Exception) {
-                error = "port $port: ${e.message}"
-                RequestLog.add("SERVER ERROR: $error")
             }
-        }, "http-server").start()
+            if (s == null) {
+                error = "port $port: ${last?.message}"
+                RequestLog.add("SERVER ERROR: $error")
+                return@Thread
+            }
+            server = s
+            error = null
+            while (!s.isClosed && !stopped) {
+                val client = try { s.accept() } catch (e: Exception) { break }
+                pool.execute { handle(client) }
+            }
+        }, "http-server").also { it.start() }
     }
 
     fun stop() {
+        stopped = true
         try { server?.close() } catch (_: Exception) {}
         server = null
     }
+
+    /** Started and not failed (also true while it is still binding). */
+    val alive get() = thread != null && !stopped && error == null
 
     val running get() = server?.isClosed == false
 

@@ -15,6 +15,13 @@ android {
         targetSdk = 35
         versionCode = 3
         versionName = "1.1.0"
+        // Where the public list lives. Override for tests: build.cmd release -PlistUrl=http://...
+        val listUrl = (project.findProperty("listUrl") as String?)
+            ?: "https://raw.githubusercontent.com/Steklorez/JacCollector/main/sources.json"
+        buildConfigField("String", "LIST_URL", "\"$listUrl\"")
+    }
+    buildFeatures {
+        buildConfig = true
     }
 
     // Release signing comes from keystore.properties (not in git). Without it the release
