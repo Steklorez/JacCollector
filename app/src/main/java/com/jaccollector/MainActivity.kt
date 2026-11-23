@@ -472,8 +472,7 @@ class MainActivity : Activity() {
                         .append(if (anyRated) SpannableStringBuilder(ratingText(rating(e))).append(" ") else "")
                         .append("${e.name}   [${Store.flags(e.lang.split(','))}]$star$dead")
                 }.toTypedArray()
-                AlertDialog.Builder(this)
-                    .setTitle("🌐 Общий список: ✅ используется · ➕ добавить · ⭐ рекомендуем · 💀 не работает")
+                val dlg = AlertDialog.Builder(this)
                     .setItems(labels) { _, i ->
                         val e = entries[i]
                         if (e.url.lowercase() in have) {
@@ -487,7 +486,14 @@ class MainActivity : Activity() {
                         buildSources()
                     }
                     .setNegativeButton("Закрыть", null)
-                    .show()
+                    .create()
+                // just the list; a small legend at the bottom explains the marks
+                dlg.listView.addFooterView(text(
+                    "✅ используется · ➕ добавить · ⭐ рекомендуем · 💀 не работает · " +
+                        "оценка 0–10, в скобках — сколько приставок отметилось",
+                    12f, Color.rgb(150, 160, 170)).apply { setPadding(dp(24), dp(12), dp(24), dp(4)) },
+                    null, false)
+                dlg.show()
             }
         }.start()
     }
