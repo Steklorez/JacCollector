@@ -1,0 +1,14 @@
+[Unit]
+Description=Start the JacCollector rating workflow on GitHub
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+EnvironmentFile=/etc/jc-rating-kick.env
+ExecStart=/usr/local/bin/jc-rating-kick.sh
+DynamicUser=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=yes
+NoNewPrivileges=yes
