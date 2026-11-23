@@ -1,11 +1,11 @@
-# Once a day: rebuild the shared server rating from the health reports and publish it as
+# Every 6 hours (GitHub sometimes skips scheduled runs, so a missed one costs little): rebuild the shared server rating from the health reports and publish it as
 # ratings.json on the "stats" branch (the app downloads it from raw.githubusercontent.com).
 # It only reads Firestore (read-only key) and replaces that one file; nothing else is touched.
 name: rating
 
 on:
   schedule:
-    - cron: "17 3 * * *"
+    - cron: "17 */6 * * *"
   workflow_dispatch:
 
 permissions:
