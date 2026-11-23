@@ -78,7 +78,7 @@ object Updater {
                     null -> "GitHub не ответил, попробуйте позже"
                     else -> if (compare(r, BuildConfig.VERSION_NAME) <= 0)
                         "Установлена последняя версия ${BuildConfig.VERSION_NAME}"
-                    else "Версия $r скачана — нажмите «Обновить» вверху справа"
+                    else "Версия $r скачана — нажмите «Установить» в разделе «Обновления»"
                 }
             } catch (e: Exception) {
                 "Не удалось скачать обновление: ${e.message}"

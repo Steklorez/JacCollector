@@ -2,8 +2,12 @@ package com.jaccollector
 
 import android.app.Activity
 import android.app.AlertDialog
+import android.content.Context
 import android.content.Intent
+import android.content.res.ColorStateList
 import android.graphics.Color
+import android.graphics.PorterDuff
+import android.graphics.Typeface
 import android.graphics.drawable.GradientDrawable
 import android.graphics.drawable.StateListDrawable
 import android.net.Uri
@@ -11,41 +15,97 @@ import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
 import android.text.InputType
-import android.text.SpannableStringBuilder
-import android.text.Spanned
-import android.text.style.ForegroundColorSpan
+import android.text.TextUtils
 import android.view.Gravity
 import android.view.View
-import android.widget.Button
+import android.view.ViewGroup
 import android.widget.CheckBox
 import android.widget.EditText
+import android.widget.FrameLayout
+import android.widget.HorizontalScrollView
 import android.widget.ImageView
-import android.widget.Toast
 import android.widget.LinearLayout
 import android.widget.ScrollView
 import android.widget.TextView
+import android.widget.Toast
 import java.net.Inet4Address
 import java.net.NetworkInterface
 
-/** Settings screen, works with a TV remote (every control is a focusable button/checkbox). */
+/**
+ * The whole app on one screen with a side menu: Support, Active servers, Load (shared list and
+ * its on/off switch), Request log, Updates.
+ * Built for a TV remote: everything is a focusable row or button with a clear white frame.
+ * Sizes are in dp, so a 1080p and a 4K TV look the same; on a narrow (phone) screen the menu
+ * moves to the top and table rows fold into two lines.
+ */
 class MainActivity : Activity() {
     companion object {
         const val BOOSTY = "https://boosty.to/steklorez"
         const val KOFI = "https://ko-fi.com/I3I0273OYI"
+
+        val BG = Color.rgb(11, 13, 16)
+        val PANEL = Color.rgb(18, 21, 26)
+        val PANEL2 = Color.rgb(25, 30, 37)
+        val LINE = Color.rgb(34, 40, 49)
+        val TEXT = Color.rgb(230, 233, 238)
+        val MUTED = Color.rgb(138, 147, 160)
+        val DIM = Color.rgb(92, 101, 112)
+        val ACCENT = Color.rgb(79, 140, 255)
+        val OK = Color.rgb(60, 207, 142)
+        val WARN = Color.rgb(240, 180, 41)
+        val BAD = Color.rgb(239, 93, 93)
+
+        private const val MATCH = ViewGroup.LayoutParams.MATCH_PARENT
+        private const val WRAP = ViewGroup.LayoutParams.WRAP_CONTENT
     }
 
+    private enum class Page { SOURCES, CATALOG, LOG, UPDATES }
+
     private val ui = Handler(Looper.getMainLooper())
-    private lateinit var serverText: TextView
-    private lateinit var deadlineBtn: Button
-    private lateinit var sourcesBox: LinearLayout
-    private lateinit var logText: TextView
-    private lateinit var catalogBtn: Button
-    private lateinit var syncInfo: TextView
-    private lateinit var communityBox: CheckBox
-    private lateinit var updateBtn: Button
-    private var updatePulse: android.animation.ValueAnimator? = null
-    private val statusViews = HashMap<String, TextView>()
-    private val titleViews = HashMap<String, TextView>()
+    private var page = Page.SOURCES
+    /** Phone-like screen: menu on top, rows in two lines. */
+    private var narrow = false
+    private val medium: Typeface = Typeface.create("sans-serif-medium", Typeface.NORMAL)
+
+    private lateinit var rail: ViewGroup
+    private lateinit var content: FrameLayout
+    private val navItems = HashMap<Page, View>()
+    private val navIcons = HashMap<Page, ImageView>()
+    private val navCounts = HashMap<Page, TextView>()
+    private lateinit var updateCard: View
+    private lateinit var updateTitle: TextView
+
+    // views of the page on screen (null when another page is shown)
+    private var serverDot: View? = null
+    private var serverAddr: TextView? = null
+    private var serverLan: TextView? = null
+    private var workValue: TextView? = null
+    private var foundValue: TextView? = null
+    private var deadlineValue: TextView? = null
+    private var checkedText: TextView? = null
+    private var sourcesList: LinearLayout? = null
+    private var logText: TextView? = null
+    private var syncInfo: TextView? = null
+    private var switchPill: TextView? = null
+    private var switchRow: View? = null
+    private var shareOnText: TextView? = null
+    private var shareOffText: TextView? = null
+    private var installRow: View? = null
+    private var installTitle: TextView? = null
+    private var catalogList: LinearLayout? = null
+    private var catalogChips: List<TextView> = emptyList()
+    private var catalogFooter: TextView? = null
+
+    private class Row(
+        val dot: View, val name: TextView, val sub: TextView, val langs: LinearLayout?,
+        val count: TextView?, val barFill: View?, val lat: TextView?, val state: TextView,
+    ) { var langKey = "" }
+
+    private val rows = HashMap<String, Row>()
+
+    private var catalog: Community.Catalog? = null
+    private var catalogLoading = false
+    private var catalogFilter = 0
 
     private val ticker = object : Runnable {
         override fun run() {
@@ -58,109 +118,27 @@ class MainActivity : Activity() {
         super.onCreate(savedInstanceState)
         Tls.init(applicationContext) // Let's Encrypt root for Android < 7.1.1
         CollectorService.start(this)
+        window.decorView.setBackgroundColor(BG)
+        narrow = resources.configuration.screenWidthDp < 640
 
-        val root = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-            setPadding(dp(32), dp(24), dp(32), dp(24))
-            setBackgroundColor(Color.rgb(18, 24, 33))
+        val root = RootLayout(this).apply {
+            orientation = if (narrow) LinearLayout.VERTICAL else LinearLayout.HORIZONTAL
+            setBackgroundColor(BG)
         }
-        // title on the left, the "update" badge in the right corner (hidden until there is one)
-        val top = LinearLayout(this).apply {
-            orientation = LinearLayout.HORIZONTAL
-            gravity = Gravity.CENTER_VERTICAL
-        }
-        top.addView(text(SpannableStringBuilder("JacCollector").append("  ${BuildConfig.VERSION_NAME}").also {
-            it.setSpan(ForegroundColorSpan(Color.rgb(140, 150, 160)), 12, it.length, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
-            it.setSpan(android.text.style.RelativeSizeSpan(0.6f), 12, it.length, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
-        }, 26f, Color.WHITE).apply {
-            layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
+        rail = buildRail()
+        root.addView(rail)
+        root.addView(View(this).apply {
+            setBackgroundColor(LINE)
+            layoutParams = if (narrow) LinearLayout.LayoutParams(MATCH, dp(1)) else LinearLayout.LayoutParams(dp(1), MATCH)
         })
-        updateBtn = updateBadge()
-        top.addView(updateBtn)
-        root.addView(top)
-        root.addView(text(
-            "Собирает раздачи с публичных JacRed и отдаёт их плеерам на этой приставке.\n" +
-                "В NUM: «Адрес Jackett» = http://127.0.0.1:${Store.PORT}, «API Key» — любой.",
-            15f, Color.rgb(190, 200, 210)))
-        serverText = text("", 15f, Color.rgb(120, 220, 140))
-        root.addView(serverText)
-
-        val row = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
-        row.addView(button("♥ Поддержать автора") { donateDialog() })
-        row.addView(button("➕ Добавить источник") { addSourceDialog() })
-        catalogBtn = button("🌐 Общий список серверов") { catalogDialog() }
-        row.addView(catalogBtn)
-        root.addView(row)
-
-        // "Sources" header with the connection test right next to the list it tests
-        val header = LinearLayout(this).apply {
-            orientation = LinearLayout.HORIZONTAL
-            gravity = Gravity.CENTER_VERTICAL
-            setPadding(0, dp(16), 0, dp(4))
+        content = FrameLayout(this).apply {
+            layoutParams = if (narrow) LinearLayout.LayoutParams(MATCH, 0, 1f) else LinearLayout.LayoutParams(0, MATCH, 1f)
         }
-        header.addView(text("Используемые источники", 20f, Color.WHITE).apply { setPadding(0, 0, dp(24), 0) })
-        header.addView(button("📶 Проверить связь") { probe(it) })
-        deadlineBtn = button("") { nextDeadline() }
-        header.addView(deadlineBtn)
-        root.addView(header)
-        sourcesBox = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
-        root.addView(sourcesBox)
-
-        // ---------- settings ----------
-        root.addView(text("Настройки", 20f, Color.WHITE).apply { setPadding(0, dp(24), 0, dp(4)) })
-        communityBox = CheckBox(this).apply {
-            text = "🌐 Пользоваться общим списком серверов"
-            textSize = 15f
-            setTextColor(Color.WHITE)
-            isChecked = Store.shareEnabled(this@MainActivity)
-            setOnClickListener { onCommunityToggle(isChecked) }
-            styleCheckBox(this)
-        }
-        root.addView(communityBox)
-        root.addView(text(
-            "Включено: вы получаете серверы из общего списка, а взамен в общий список " +
-                "уходят публичные адреса, которые вы добавляете (только рабочие), и отметки о том, " +
-                "что сервер из общего списка перестал отвечать. Уходит только адрес сервера, сколько " +
-                "на нём русскоязычных раздач, язык системы и анонимный номер установки от Firebase (без " +
-                "регистрации и личных данных, нужен, чтобы каждую приставку учитывать один раз).\n" +
-                "Выключено: ничего не отправляется и не скачивается, но и пользоваться можно только " +
-                "личными серверами (домашними или с API-ключом).\n" +
-                "Поисковые запросы, домашние адреса и ключи не отправляются никогда.\n" +
-                "Обновления приложения проверяются на GitHub раз в сутки независимо от этой настройки.",
-            12f, Color.GRAY))
-        syncInfo = text("", 13f, Color.rgb(150, 160, 170))
-        root.addView(syncInfo)
-        // version and a manual update check (otherwise it happens by itself once a day)
-        val ver = LinearLayout(this).apply {
-            orientation = LinearLayout.HORIZONTAL
-            gravity = Gravity.CENTER_VERTICAL
-            setPadding(0, dp(8), 0, 0)
-        }
-        ver.addView(text("Версия ${BuildConfig.VERSION_NAME}", 15f, Color.WHITE).apply { setPadding(0, 0, dp(24), 0) })
-        ver.addView(button("🔄 Проверить обновления") { btn ->
-            if (!Store.allow(this, "update-check", 10_000)) return@button
-            btn.isEnabled = false
-            Toast.makeText(this, "Проверяю обновления…", Toast.LENGTH_SHORT).show()
-            Updater.checkNow(this) { msg ->
-                ui.post {
-                    btn.isEnabled = true
-                    showUpdate()
-                    Toast.makeText(this, msg, Toast.LENGTH_LONG).show()
-                }
-            }
-        })
-        root.addView(ver)
-        showSync()
-        applyCommunityUi()
-
-        // ---------- request log (very bottom) ----------
-        root.addView(text("Последние запросы", 20f, Color.WHITE).apply { setPadding(0, dp(24), 0, dp(4)) })
-        logText = text("", 13f, Color.rgb(170, 180, 190))
-        root.addView(logText)
-
-        setContentView(ScrollView(this).apply { addView(root) })
-        buildSources()
-        updateDeadline()
+        root.addView(content)
+        setContentView(root)
+        showPage(Page.SOURCES)
+        // "Support" is the first menu item, but the remote starts on the active servers
+        navItems[Page.SOURCES]?.requestFocus()
         // servers never checked in this session get a quick check, so status and languages show up
         Aggregator.probeNew(this, Store.sources(this).filter {
             (it.enabled || it.communityOff) && (Aggregator.states[it.name]?.lastAt ?: 0L) == 0L
@@ -178,107 +156,460 @@ class MainActivity : Activity() {
         super.onPause()
     }
 
-    // ---------- sources ----------
-
-    private fun buildSources() {
-        sourcesBox.removeAllViews()
-        statusViews.clear()
-        titleViews.clear()
-        val list = Store.sources(this)
-        list.forEachIndexed { index, src ->
-            // One focusable card per server; OK opens the actions for exactly this server.
-            val card = LinearLayout(this).apply {
-                orientation = LinearLayout.VERTICAL
-                isFocusable = true
-                isClickable = true
-                setPadding(dp(16), dp(10), dp(16), dp(10))
-                background = focusBackground(Color.rgb(30, 38, 48), dp(8))
-                layoutParams = LinearLayout.LayoutParams(
-                    LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT
-                ).apply { setMargins(0, dp(4), 0, dp(4)) }
-                setOnClickListener { sourceDialog(index) }
-            }
-            val mark = when {
-                src.communityOff -> "⚠"
-                src.enabled -> "✅"
-                else -> "⛔"
-            }
-            val title = text(cardTitle(src, mark), 18f, if (src.enabled) Color.WHITE else Color.GRAY)
-            titleViews[src.name] = title
-            card.addView(title)
-            val st = text(src.url, 13f, Color.rgb(150, 160, 170)).apply { setPadding(dp(36), 0, 0, 0) }
-            statusViews[src.name] = st
-            card.addView(st)
-            sourcesBox.addView(card)
+    @Deprecated("Deprecated in Java")
+    override fun onBackPressed() {
+        if (page != Page.SOURCES) {
+            showPage(Page.SOURCES)
+            navItems[Page.SOURCES]?.requestFocus()
+        } else {
+            @Suppress("DEPRECATION")
+            super.onBackPressed()
         }
-        if (list.isEmpty()) sourcesBox.addView(text(
-            if (Store.shareEnabled(this)) "Список пуст — добавьте источник или выберите серверы в общем списке."
-            else "Список пуст — добавьте личный сервер или включите «Пользоваться общим списком» в настройках.",
-            14f, Color.GRAY))
+    }
+
+    /** Leaving the page towards the menu lands on the current page's item, not on the nearest one. */
+    private inner class RootLayout(c: Context) : LinearLayout(c) {
+        override fun focusSearch(focused: View?, direction: Int): View? {
+            val r = super.focusSearch(focused, direction)
+            val towardsMenu = if (narrow) View.FOCUS_UP else View.FOCUS_LEFT
+            if (direction == towardsMenu && r != null && focused != null && inRail(r) && !inRail(focused)) {
+                return navItems[page] ?: r
+            }
+            return r
+        }
+
+        private fun inRail(v: View): Boolean {
+            var p: Any? = v
+            while (p is View) {
+                if (p === rail) return true
+                p = p.parent
+            }
+            return false
+        }
+    }
+
+    // ---------- side menu ----------
+
+    private fun buildRail(): ViewGroup {
+        val box = LinearLayout(this).apply {
+            orientation = if (narrow) LinearLayout.HORIZONTAL else LinearLayout.VERTICAL
+            gravity = if (narrow) Gravity.CENTER_VERTICAL else Gravity.NO_GRAVITY
+            setBackgroundColor(PANEL)
+            if (narrow) setPadding(dp(8), dp(6), dp(8), dp(6)) else setPadding(dp(14), dp(24), dp(14), dp(18))
+            layoutParams = if (narrow) FrameLayout.LayoutParams(WRAP, WRAP) else LinearLayout.LayoutParams(dp(200), MATCH)
+        }
+        if (!narrow) {
+            val brand = LinearLayout(this).apply {
+                orientation = LinearLayout.HORIZONTAL
+                gravity = Gravity.CENTER_VERTICAL
+                setPadding(dp(6), 0, 0, dp(24))
+            }
+            brand.addView(TextView(this).apply {
+                text = "JC"
+                textSize = 13f
+                typeface = Typeface.DEFAULT_BOLD
+                setTextColor(Color.WHITE)
+                gravity = Gravity.CENTER
+                background = rounded(ACCENT, dp(8))
+                layoutParams = LinearLayout.LayoutParams(dp(32), dp(32)).apply { rightMargin = dp(10) }
+            })
+            brand.addView(LinearLayout(this).apply {
+                orientation = LinearLayout.VERTICAL
+                addView(tv("JacCollector", 15f, TEXT, medium))
+                addView(tv("версия ${BuildConfig.VERSION_NAME}", 11f, DIM))
+            })
+            box.addView(brand)
+        }
+        box.addView(navItem(null, R.drawable.ic_heart, "Поддержать") { donateDialog() })
+        box.addView(navItem(Page.SOURCES, R.drawable.ic_sources, "Активные"))
+        box.addView(navItem(Page.CATALOG, R.drawable.ic_globe, "Загрузить"))
+        box.addView(navItem(Page.LOG, R.drawable.ic_log, "Журнал"))
+        box.addView(navItem(Page.UPDATES, R.drawable.ic_refresh, "Обновления"))
+        box.addView(View(this).apply {
+            layoutParams = if (narrow) LinearLayout.LayoutParams(dp(8), 1) else LinearLayout.LayoutParams(1, 0, 1f)
+        })
+        updateCard = buildUpdateCard()
+        box.addView(updateCard)
+        if (!narrow) return box
+        return HorizontalScrollView(this).apply {
+            isHorizontalScrollBarEnabled = false
+            setBackgroundColor(PANEL)
+            addView(box)
+        }
+    }
+
+    private fun navItem(p: Page?, icon: Int, label: String, onClick: (() -> Unit)? = null): View {
+        val item = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            isFocusable = true
+            isClickable = true
+            setPadding(dp(12), dp(9), dp(12), dp(9))
+            background = states(
+                focused = shape(PANEL2, Color.WHITE, dp(2), dp(8)),
+                selected = shape(PANEL2, 0, 0, dp(8)),
+                normal = shape(Color.TRANSPARENT, 0, 0, dp(8)))
+            layoutParams = LinearLayout.LayoutParams(if (narrow) WRAP else MATCH, WRAP).apply {
+                bottomMargin = if (narrow) 0 else dp(4)
+                rightMargin = if (narrow) dp(4) else 0
+            }
+            setOnClickListener { if (p != null) showPage(p) else onClick?.invoke() }
+        }
+        val img = ImageView(this).apply {
+            setImageResource(icon)
+            setColorFilter(MUTED, PorterDuff.Mode.SRC_IN)
+            layoutParams = LinearLayout.LayoutParams(dp(18), dp(18)).apply { rightMargin = dp(12) }
+        }
+        item.addView(img)
+        item.addView(tv(label, 14f, 0).apply {
+            setTextColor(ColorStateList(
+                arrayOf(intArrayOf(android.R.attr.state_selected), intArrayOf(android.R.attr.state_focused), intArrayOf()),
+                intArrayOf(TEXT, TEXT, MUTED)))
+            isDuplicateParentStateEnabled = true
+            layoutParams = LinearLayout.LayoutParams(if (narrow) WRAP else 0, WRAP, if (narrow) 0f else 1f)
+        })
+        if (p != null) {
+            val count = tv("", 11f, DIM).apply { setPadding(dp(8), 0, 0, 0) }
+            item.addView(count)
+            navCounts[p] = count
+            navItems[p] = item
+            navIcons[p] = img
+        }
+        return item
+    }
+
+    /** Calm card at the bottom of the menu while a downloaded update waits to be installed. */
+    private fun buildUpdateCard(): View {
+        val card = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            isFocusable = true
+            isClickable = true
+            setPadding(dp(12), dp(10), dp(12), dp(10))
+            background = states(
+                focused = shape(Color.rgb(20, 33, 58), Color.WHITE, dp(2), dp(10)),
+                normal = shape(Color.rgb(20, 33, 58), Color.rgb(44, 74, 124), dp(1), dp(10)))
+            layoutParams = LinearLayout.LayoutParams(if (narrow) WRAP else MATCH, WRAP).apply {
+                topMargin = if (narrow) 0 else dp(8)
+            }
+            visibility = View.GONE
+            setOnClickListener { onUpdatePressed() }
+        }
+        updateTitle = tv("", 13f, Color.rgb(207, 224, 255), medium)
+        card.addView(updateTitle)
+        if (!narrow) card.addView(tv("OK — установить", 11f, Color.rgb(143, 169, 214)))
+        return card
+    }
+
+    private fun showPage(p: Page) {
+        page = p
+        for ((k, v) in navItems) {
+            v.isSelected = k == p
+            navIcons[k]?.setColorFilter(if (k == p) ACCENT else MUTED, PorterDuff.Mode.SRC_IN)
+        }
+        serverDot = null; serverAddr = null; serverLan = null; workValue = null; foundValue = null
+        deadlineValue = null; checkedText = null; sourcesList = null; logText = null; syncInfo = null
+        switchPill = null; catalogList = null; catalogChips = emptyList(); catalogFooter = null
+        switchRow = null; shareOnText = null; shareOffText = null; installRow = null; installTitle = null
+        rows.clear()
+        content.removeAllViews()
+        content.addView(when (p) {
+            Page.SOURCES -> sourcesPage()
+            Page.CATALOG -> catalogPage()
+            Page.LOG -> logPage()
+            Page.UPDATES -> updatesPage()
+        })
         refreshStatus()
     }
 
-    /**
-     * "✅  jacred.su   🇷🇺 🇺🇦": languages seen in the server's answers; until it answered,
-     * the languages from the public list. 🔑 marks a server with an API key, 🏠 a personal one.
-     */
-    /**
-     * Shared rating as a fixed-width column, so that it lines up from row to row:
-     * "██████████  8/10  (35)". Bar green 7-10, orange 4-6, red 0-3; dark bar with "–" until
-     * enough different boxes have reported. Numbers are monospace and padded.
-     */
-    private fun ratingText(r: Community.Rating?): CharSequence {
-        val sb = SpannableStringBuilder()
-        val known = r != null && r.boxes >= Community.MIN_BOXES
-        val score = if (known) r!!.score else 0
-        val color = when {
-            !known -> Color.TRANSPARENT // keeps the column width, draws nothing
-            score >= 7 -> Color.rgb(110, 210, 120)
-            score >= 4 -> Color.rgb(240, 160, 60)
-            else -> Color.rgb(230, 90, 80)
+    /** Page frame: title, one line of explanation, buttons on the right. */
+    private fun pageFrame(title: String, subtitle: String, actions: List<View> = emptyList()): LinearLayout {
+        val outer = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            if (narrow) setPadding(dp(14), dp(14), dp(14), dp(10)) else setPadding(dp(28), dp(18), dp(28), dp(14))
+            layoutParams = FrameLayout.LayoutParams(MATCH, MATCH)
         }
-        // solid blocks touch each other: a short even bar, drawn a bit smaller than the text
-        sb.append("█".repeat(score))
-        if (score > 0) sb.setSpan(ForegroundColorSpan(color), 0, sb.length, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
-        val gray = sb.length
-        sb.append("█".repeat(10 - score))
-        sb.setSpan(ForegroundColorSpan(if (known) Color.rgb(70, 75, 80) else Color.TRANSPARENT),
-            gray, sb.length, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
-        sb.setSpan(android.text.style.RelativeSizeSpan(0.6f), 0, sb.length, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
-        val num = sb.length
-        sb.append((if (known) "$score/10" else "").padStart(6))
-        sb.setSpan(ForegroundColorSpan(color), num, sb.length, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
-        val cnt = sb.length
-        sb.append((if (known) " (${r!!.boxes})" else "").padEnd(6))
-        sb.setSpan(ForegroundColorSpan(Color.rgb(150, 155, 160)), cnt, sb.length, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
-        sb.setSpan(android.text.style.TypefaceSpan("monospace"), num, sb.length, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
-        return sb
+        val head = LinearLayout(this).apply {
+            orientation = if (narrow) LinearLayout.VERTICAL else LinearLayout.HORIZONTAL
+            gravity = if (narrow) Gravity.NO_GRAVITY else Gravity.CENTER_VERTICAL
+            setPadding(0, 0, 0, dp(12))
+        }
+        head.addView(LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            layoutParams = LinearLayout.LayoutParams(if (narrow) MATCH else 0, WRAP, if (narrow) 0f else 1f)
+            addView(tv(title, if (narrow) 20f else 24f, TEXT, medium))
+            addView(tv(subtitle, 12f, MUTED).apply { setPadding(0, dp(4), 0, 0) })
+        })
+        if (actions.isNotEmpty()) {
+            val btns = LinearLayout(this).apply {
+                orientation = LinearLayout.HORIZONTAL
+                if (narrow) setPadding(0, dp(10), 0, 0)
+            }
+            actions.forEachIndexed { i, b ->
+                (b.layoutParams as? LinearLayout.LayoutParams)?.leftMargin = if (i == 0 && narrow) 0 else dp(10)
+                btns.addView(b)
+            }
+            head.addView(btns)
+        }
+        outer.addView(head)
+        return outer
     }
 
-    /** "✅  ██████████  8/10  (35)  jacred.su  [рус]": the rating column right after the mark. */
-    private fun cardTitle(src: Source, mark: String): CharSequence {
-        val name = cardTitleText(src)
-        if (!src.isPublic) return "$mark  $name"
-        // no column at all until at least one server in the list has a rating
-        val ratings = Community.ratings(this)
-        val anyRated = Store.sources(this).any { s ->
-            s.isPublic && (ratings[Store.normalizeUrl(s.url).lowercase()]?.boxes ?: 0) >= Community.MIN_BOXES
+    // ---------- page: sources ----------
+
+    private fun sourcesPage(): View {
+        val outer = pageFrame("Активные серверы",
+            "Все JacRed — в одном поиске для плееров",
+            listOf(button("Проверить связь", R.drawable.ic_pulse) { probe(it) },
+                button("Добавить источник", R.drawable.ic_plus, primary = true) { addSourceDialog() }))
+
+        // strip of figures: server address, working sources, results, waiting time
+        val strip = LinearLayout(this).apply {
+            orientation = if (narrow) LinearLayout.VERTICAL else LinearLayout.HORIZONTAL
+            background = shape(PANEL, LINE, dp(1), dp(12))
+            layoutParams = LinearLayout.LayoutParams(MATCH, WRAP).apply { bottomMargin = dp(14) }
         }
-        if (!anyRated) return "$mark  $name"
-        val r = ratings[Store.normalizeUrl(src.url).lowercase()]
-        return SpannableStringBuilder("$mark  ").append(ratingText(r)).append(" ").append(name)
+        val t1 = tile("Сервер Jackett", 2.2f)
+        val addrRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL }
+        serverDot = dot(DIM).also { addrRow.addView(it) }
+        serverAddr = tv("127.0.0.1:${Store.PORT}", 17f, TEXT).apply {
+            typeface = Typeface.MONOSPACE
+            setPadding(dp(10), 0, 0, 0)
+        }.also { addrRow.addView(it) }
+        // the home-network address sits on the same line, to keep the strip low
+        serverLan = tv("", 11f, DIM).apply { setPadding(dp(12), 0, 0, 0); singleLine() }.also { addrRow.addView(it) }
+        t1.addView(addrRow)
+        t1.addView(tv("В плеере: Jackett — этот адрес, ключ любой", 11f, MUTED).apply { setPadding(0, dp(4), 0, 0); singleLine() })
+        strip.addView(t1)
+        val t2 = tile("Работают", 1f)
+        workValue = tv("—", 18f, TEXT, medium).also { t2.addView(it) }
+        val t3 = tile("Раздач", 1f)
+        foundValue = tv("—", 18f, TEXT, medium).also { t3.addView(it) }
+        val t4 = tile("Ждать", 1f).apply {
+            isFocusable = true
+            isClickable = true
+            background = states(focused = shape(PANEL2, Color.WHITE, dp(2), dp(12)), normal = shape(Color.TRANSPARENT, 0, 0, dp(12)))
+            setOnClickListener { nextDeadline() }
+        }
+        deadlineValue = tv("", 18f, TEXT, medium).also { t4.addView(it) }
+        // thin lines between the tiles, drawn by the strip itself (a MATCH_PARENT line view
+        // inside a wrap_content strip would stretch it to the whole screen)
+        strip.dividerDrawable = GradientDrawable().apply { setColor(LINE); setSize(dp(1), dp(1)) }
+        strip.showDividers = LinearLayout.SHOW_DIVIDER_MIDDLE
+        for (t in listOf(t2, t3, t4)) strip.addView(t)
+        outer.addView(strip)
+
+        val sec = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            setPadding(0, 0, 0, dp(8))
+        }
+        sec.addView(tv("Подключены сейчас", 16f, TEXT, medium).apply {
+            layoutParams = LinearLayout.LayoutParams(0, WRAP, 1f)
+        })
+        checkedText = tv("", 12f, MUTED).also { sec.addView(it) }
+        outer.addView(sec)
+
+        val table = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            background = shape(Color.TRANSPARENT, LINE, dp(1), dp(12))
+            setPadding(dp(1), dp(1), dp(1), dp(1))
+            layoutParams = LinearLayout.LayoutParams(MATCH, 0, 1f)
+        }
+        if (!narrow) table.addView(headerRow(listOf(
+            "" to dp(22), "Сервер" to -12, "Языки" to -12, "Раздач" to dp(64), "Отклик" to dp(150), "Состояние" to dp(150))))
+        sourcesList = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        table.addView(ScrollView(this).apply {
+            isVerticalScrollBarEnabled = false
+            layoutParams = LinearLayout.LayoutParams(MATCH, 0, 1f)
+            addView(sourcesList)
+        })
+        outer.addView(table)
+        outer.addView(tv("OK на сервере — подробности, выключить или удалить  ·  OK на «Ждать» — сколько ждать ответа источников", 11f, DIM).apply { setPadding(0, dp(8), 0, 0); singleLine() })
+        buildSources()
+        updateDeadline()
+        return outer
     }
 
-    private fun cardTitleText(src: Source): String {
+    private fun tile(label: String, weight: Float) = LinearLayout(this).apply {
+        orientation = LinearLayout.VERTICAL
+        setPadding(dp(16), dp(9), dp(16), dp(9))
+        layoutParams = if (narrow) LinearLayout.LayoutParams(MATCH, WRAP) else LinearLayout.LayoutParams(0, MATCH, weight)
+        addView(caption(label).apply { setPadding(0, 0, 0, dp(4)); singleLine() })
+    }
+
+    /** Column titles; a negative width means a weight (x10). */
+    private fun headerRow(cols: List<Pair<String, Int>>) = LinearLayout(this).apply {
+        orientation = LinearLayout.HORIZONTAL
+        gravity = Gravity.CENTER_VERTICAL
+        setPadding(dp(14), dp(10), dp(14), dp(10))
+        background = shape(PANEL, 0, 0, dp(11))
+        for ((t, w) in cols) addView(caption(t).apply { layoutParams = col(w) })
+    }
+
+    private fun col(w: Int) = if (w < 0) LinearLayout.LayoutParams(0, WRAP, -w / 10f) else LinearLayout.LayoutParams(w, WRAP)
+
+    private fun buildSources() {
+        val box = sourcesList ?: return
+        box.removeAllViews()
+        rows.clear()
+        val list = Store.sources(this)
+        list.forEachIndexed { index, src ->
+            if (index > 0) box.addView(View(this).apply {
+                setBackgroundColor(LINE)
+                layoutParams = LinearLayout.LayoutParams(MATCH, dp(1))
+            })
+            box.addView(sourceRow(index, src))
+        }
+        if (list.isEmpty()) box.addView(tv(
+            if (Store.shareEnabled(this)) "Список пуст — добавьте источник или выберите серверы в общем списке."
+            else "Список пуст — добавьте личный сервер или включите общий список в разделе «Загрузить».",
+            14f, MUTED).apply { setPadding(dp(16), dp(20), dp(16), dp(20)) })
+        refreshStatus()
+    }
+
+    private fun sourceRow(index: Int, src: Source): View {
+        val row = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            isFocusable = true
+            isClickable = true
+            minimumHeight = dp(54)
+            setPadding(dp(14), dp(8), dp(14), dp(8))
+            background = rowBg()
+            setOnClickListener { sourceDialog(index) }
+        }
+        val d = dot(DIM).apply { (layoutParams as LinearLayout.LayoutParams).rightMargin = dp(14) }
+        row.addView(LinearLayout(this).apply {
+            layoutParams = LinearLayout.LayoutParams(dp(22), WRAP)
+            addView(d)
+        })
+        val nameCol = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            layoutParams = col(-12)
+        }
+        val name = tv(src.name, 15f, TEXT, medium).apply { singleLine() }
+        val sub = tv(src.url, 11f, DIM).apply { typeface = Typeface.MONOSPACE; singleLine() }
+        nameCol.addView(name)
+        nameCol.addView(sub)
+        row.addView(nameCol)
+        if (narrow) {
+            val state = tv("", 12f, MUTED).apply { gravity = Gravity.END }
+            row.addView(state)
+            rows[src.name] = Row(d, name, sub, null, null, null, null, state)
+            return row
+        }
+        val langs = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            layoutParams = col(-12)
+        }
+        row.addView(langs)
+        val count = tv("—", 14f, TEXT).apply { layoutParams = col(dp(64)) }
+        row.addView(count)
+        val latBox = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            layoutParams = col(dp(150))
+        }
+        val bar = FrameLayout(this).apply {
+            background = rounded(LINE, dp(2))
+            layoutParams = LinearLayout.LayoutParams(dp(64), dp(4)).apply { rightMargin = dp(10) }
+        }
+        val fill = View(this).apply {
+            background = rounded(OK, dp(2))
+            layoutParams = FrameLayout.LayoutParams(0, MATCH)
+        }
+        bar.addView(fill)
+        latBox.addView(bar)
+        val lat = tv("—", 13f, TEXT)
+        latBox.addView(lat)
+        row.addView(latBox)
+        val state = tv("", 13f, MUTED).apply { layoutParams = col(dp(150)); singleLine() }
+        row.addView(state)
+        rows[src.name] = Row(d, name, sub, langs, count, fill, lat, state)
+        return row
+    }
+
+    /** Languages seen in the server's answers; until it answered, the ones from the public list. */
+    private fun langCodes(src: Source): List<String> {
         val seen = Aggregator.states[src.name]?.langs?.toList().orEmpty()
         val langs = seen.ifEmpty { src.lang.split(',').filter { it.isNotBlank() } }
-        val tag = when {
-            src.apiKey.isNotBlank() -> "  🔑"
-            !src.isPublic && Community.isPersonal(src) -> "  🏠"
-            else -> ""
+        return langs.sortedBy { listOf("ru", "uk", "en").indexOf(it).let { i -> if (i < 0) 9 else i } }
+    }
+
+    private fun langLabel(code: String) = when (code.trim()) {
+        "ru" -> "РУС"; "uk" -> "УКР"; "en" -> "АНГЛ"; else -> code.trim().uppercase()
+    }
+
+    private fun refreshSources() {
+        val srv = CollectorService.server
+        when {
+            srv?.error != null -> { serverDot?.background = circle(BAD); serverAddr?.text = "Ошибка: ${srv.error}" }
+            srv?.running == true -> { serverDot?.background = circle(OK); serverAddr?.text = "127.0.0.1:${Store.PORT}" }
+            else -> { serverDot?.background = circle(WARN); serverAddr?.text = "запускается…" }
         }
-        val f = Store.flags(langs.sortedBy { listOf("ru", "uk", "en").indexOf(it).let { i -> if (i < 0) 9 else i } })
-        return "${src.name}$tag" + if (f.isNotEmpty()) "     [$f]" else ""
+        serverLan?.text = lanIp()?.let { "$it:${Store.PORT}" } ?: ""
+        val now = System.currentTimeMillis()
+        val list = Store.sources(this)
+        var working = 0
+        var found = 0
+        var lastCheck = 0L
+        for (src in list) {
+            val st = Aggregator.states[src.name]
+            lastCheck = maxOf(lastCheck, st?.lastAt ?: 0L)
+            val good = src.enabled && st != null && st.lastAt > 0 && st.lastError == null &&
+                st.rateLimitedUntil <= now && st.benchedUntil <= now
+            if (good) { working++; found += maxOf(st!!.lastCount, 0) }
+            val r = rows[src.name] ?: continue
+            val (msg, color) = when {
+                src.communityOff -> "Не работает у других" to BAD
+                !src.enabled -> "Выключен" to DIM
+                st != null && st.rateLimitedUntil > now ->
+                    "Пауза ${(st.rateLimitedUntil - now) / 60000 + 1} мин · 429" to WARN
+                st == null || st.lastAt == 0L -> "Не проверялся" to MUTED
+                st.benchedUntil > now -> "Отдыхает ${(st.benchedUntil - now) / 60000 + 1} мин" to WARN
+                st.lastError != null -> "Ошибка" to WARN
+                else -> "Работает" to OK
+            }
+            r.state.text = msg
+            r.state.setTextColor(color)
+            r.dot.background = circle(if (color == MUTED) DIM else color)
+            r.name.setTextColor(if (src.enabled) TEXT else DIM)
+            val extra = buildList {
+                if (st?.lastError != null && (st.benchedUntil > now || msg == "Ошибка")) add(st.lastError!!)
+                val gap = st?.gapMs ?: 0
+                if (gap > 0) add("бережно: раз в ${(gap + 999) / 1000} с")
+            }
+            r.sub.text = (listOf(src.url) + extra).joinToString("  ·  ")
+            val answered = good && st!!.lastCount >= 0
+            r.count?.text = if (answered) "%,d".format(st!!.lastCount).replace(',', ' ') else "—"
+            r.count?.setTextColor(if (answered) TEXT else DIM)
+            r.lat?.text = if (answered) "${st!!.lastMs} мс" else "—"
+            r.barFill?.let { f ->
+                val ms = if (answered) st!!.lastMs else 0L
+                val lp = f.layoutParams
+                lp.width = (dp(64) * minOf(ms / 1500.0, 1.0)).toInt()
+                f.layoutParams = lp
+                f.background = rounded(when { ms < 600 -> OK; ms < 1200 -> WARN; else -> BAD }, dp(2))
+            }
+            r.langs?.let { box ->
+                val tags = langCodes(src).map(::langLabel) + listOfNotNull(
+                    if (src.apiKey.isNotBlank()) "КЛЮЧ" else null,
+                    if (!src.isPublic && src.apiKey.isBlank() && Community.isPersonal(src)) "ДОМ" else null)
+                val key = tags.joinToString()
+                if (key != r.langKey) {
+                    r.langKey = key
+                    box.removeAllViews()
+                    tags.forEach { box.addView(tag(it)) }
+                }
+            }
+        }
+        workValue?.text = if (list.isEmpty()) "—" else "$working из ${list.size}"
+        foundValue?.text = if (working == 0) "—" else "%,d".format(found).replace(',', ' ')
+        checkedText?.text = when {
+            lastCheck == 0L -> ""
+            now - lastCheck < 60_000 -> "Проверено только что"
+            else -> "Проверено ${(now - lastCheck) / 60_000} мин назад"
+        }
     }
 
     /** Actions for one server; its name is in the title and on the delete button. */
@@ -325,8 +656,10 @@ class MainActivity : Activity() {
             hint = "API key Jackett (можно пусто)"
             visibility = View.GONE
         }
-        val shareNote = text("Публичные адреса попадают в общий список (отключить — в настройках внизу).",
-            12f, Color.GRAY).apply {
+        val shareNote = TextView(this).apply {
+            text = "Публичные адреса попадают в общий список (отключить — в разделе «Загрузить»)."
+            textSize = 12f
+            setTextColor(Color.GRAY)
             visibility = if (Store.shareEnabled(this@MainActivity)) View.VISIBLE else View.GONE
         }
         val own = CheckBox(this).apply {
@@ -349,8 +682,12 @@ class MainActivity : Activity() {
             // shared list is off: only personal servers
             own.isChecked = true
             own.visibility = View.GONE
-            box.addView(text("Общий список выключен: можно добавить только личный сервер — " +
-                "домашний адрес или сервер с API-ключом.", 12f, Color.GRAY))
+            box.addView(TextView(this).apply {
+                text = "Общий список выключен: можно добавить только личный сервер — " +
+                    "домашний адрес или сервер с API-ключом."
+                textSize = 12f
+                setTextColor(Color.GRAY)
+            })
         }
         AlertDialog.Builder(this)
             .setTitle("Новый источник")
@@ -367,7 +704,7 @@ class MainActivity : Activity() {
                             .setTitle("Это публичный сервер")
                             .setMessage("${src.name} — публичный адрес. Без общего списка можно " +
                                 "добавлять только личные серверы (домашние или с API-ключом). " +
-                                "Включите «Пользоваться общим списком» в настройках внизу.")
+                                "Включите общий список в разделе «Загрузить».")
                             .setPositiveButton("Понятно", null)
                             .show()
                         return@setPositiveButton
@@ -384,33 +721,441 @@ class MainActivity : Activity() {
             .show()
     }
 
-    // ---------- shared list ----------
+    private fun probe(btn: View) {
+        // anti-spam: every 30 s at most, button off while checking
+        if (!Store.allow(this, "probe_btn", 30_000)) {
+            Toast.makeText(this, "Проверка только что была, можно снова через " +
+                "${Store.waitSeconds(this, "probe_btn", 30_000)} с", Toast.LENGTH_SHORT).show()
+            return
+        }
+        btn.isEnabled = false
+        btn.alpha = 0.5f
+        checkedText?.text = "Проверяю источники…"
+        Thread {
+            Aggregator.probe(applicationContext)
+            ui.post { btn.isEnabled = true; btn.alpha = 1f; refreshStatus() }
+        }.start()
+    }
+
+    private fun nextDeadline() {
+        val all = Store.DEADLINES
+        val cur = Store.deadlineMs(this)
+        val next = all[(all.indexOf(cur) + 1) % all.size]
+        Store.setDeadlineMs(this, next)
+        updateDeadline()
+    }
+
+    private fun updateDeadline() {
+        deadlineValue?.text = "%.1f сек".format(Store.deadlineMs(this) / 1000.0)
+    }
+
+    // ---------- page: shared list ----------
+
+    private fun catalogPage(): View {
+        val outer = pageFrame("Загрузить из общего списка",
+            "Серверы, которые нашли и проверили другие пользователи. OK — подключить или убрать",
+            listOf(shareToggle()))
+        if (!Store.shareEnabled(this)) {
+            outer.addView(shareExplain())
+            return outer
+        }
+        val chips = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            setPadding(0, 0, 0, dp(14))
+        }
+        catalogChips = listOf("Все", "Подключены", "Не подключены", "Рекомендуемые", "Не отвечают").mapIndexed { i, t ->
+            chip(t).apply {
+                isSelected = i == catalogFilter
+                setOnClickListener {
+                    catalogFilter = i
+                    catalogChips.forEachIndexed { j, c -> c.isSelected = j == i }
+                    renderCatalog()
+                }
+            }.also { chips.addView(it) }
+        }
+        outer.addView(if (narrow) HorizontalScrollView(this).apply {
+            isHorizontalScrollBarEnabled = false
+            addView(chips)
+        } else chips)
+
+        val table = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            background = shape(Color.TRANSPARENT, LINE, dp(1), dp(12))
+            setPadding(dp(1), dp(1), dp(1), dp(1))
+            layoutParams = LinearLayout.LayoutParams(MATCH, 0, 1f)
+        }
+        if (!narrow) table.addView(headerRow(listOf(
+            "Оценка" to dp(84), "Сервер" to -15, "Языки" to -11, "Состояние" to dp(130), "" to dp(140))))
+        catalogList = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        table.addView(ScrollView(this).apply {
+            isVerticalScrollBarEnabled = false
+            layoutParams = LinearLayout.LayoutParams(MATCH, 0, 1f)
+            addView(catalogList)
+        })
+        // the legend stays put at the bottom, however long the list is
+        val legend = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            setPadding(dp(16), dp(10), dp(16), dp(10))
+            background = shape(PANEL, 0, 0, dp(11))
+        }
+        legend.addView(tv("Оценка 0–10 по проверкам приставок, в скобках — сколько их было", 11f, MUTED).apply {
+            layoutParams = LinearLayout.LayoutParams(0, WRAP, 1f)
+        })
+        catalogFooter = tv("", 11f, DIM).also { legend.addView(it) }
+        table.addView(View(this).apply { setBackgroundColor(LINE); layoutParams = LinearLayout.LayoutParams(MATCH, dp(1)) })
+        table.addView(legend)
+        outer.addView(table)
+        if (catalog != null) renderCatalog()
+        loadCatalog()
+        return outer
+    }
+
+    private fun loadCatalog() {
+        // one load at a time; the catalog itself is downloaded at most every 10 minutes
+        if (catalogLoading) return
+        catalogLoading = true
+        if (catalog == null) catalogList?.addView(tv("Загружаю общий список…", 14f, MUTED).apply {
+            setPadding(dp(16), dp(20), dp(16), dp(20))
+        })
+        Thread {
+            // opening the catalog also applies the public list (new recommended servers,
+            // dead ones switched off); the download itself happens at most every 10 minutes
+            val fresh = System.currentTimeMillis() - Store.catalogTime(applicationContext) >= 10 * 60 * 1000L
+            if (fresh) Community.syncNow(applicationContext)
+            val cat = Community.catalog(applicationContext)
+            ui.post {
+                catalogLoading = false
+                if (cat != null && cat.entries.isNotEmpty()) catalog = cat
+                if (page != Page.CATALOG) return@post
+                if (catalog == null) {
+                    catalogList?.removeAllViews()
+                    catalogList?.addView(tv("Общий список недоступен, попробуйте позже", 14f, BAD).apply {
+                        setPadding(dp(16), dp(20), dp(16), dp(20))
+                    })
+                } else {
+                    renderCatalog()
+                }
+                refreshStatus()
+            }
+        }.start()
+    }
+
+    private fun catalogEntries(): List<Community.Entry> {
+        val cat = catalog ?: return emptyList()
+        val myLang = Community.deviceLang()
+        val ratings = Community.ratings(this)
+        fun score(e: Community.Entry) = ratings[e.url.lowercase()]?.takeIf { it.boxes >= Community.MIN_BOXES }
+        // language first (own language on top), then the best rated; dead and unrated last
+        return cat.entries
+            .filter { it.url.lowercase() !in cat.removed }
+            .sortedWith(compareBy<Community.Entry>(
+                { Store.priority(Source(it.name, it.url, lang = it.lang), myLang) },
+                { if (it.dead) 1 else 0 },
+                { -(score(it)?.score ?: -1) },
+                { -(score(it)?.boxes ?: 0) }))
+    }
+
+    private fun haveUrls() = Store.sources(this).map { Store.normalizeUrl(it.url).lowercase() }.toMutableSet()
+
+    private fun renderCatalog() {
+        val box = catalogList ?: return
+        val all = catalogEntries()
+        val have = haveUrls()
+        val filters: List<(Community.Entry) -> Boolean> = listOf(
+            { _ -> true }, { e -> e.url.lowercase() in have }, { e -> e.url.lowercase() !in have },
+            { e -> e.recommended }, { e -> e.dead })
+        val names = listOf("Все", "Подключены", "Не подключены", "Рекомендуемые", "Не отвечают")
+        catalogChips.forEachIndexed { i, c -> c.text = "${names[i]}  ${all.count(filters[i])}" }
+        val shown = all.filter(filters[catalogFilter])
+        catalogFooter?.text = "${shown.size} из ${all.size}" + (syncShort()?.let { "  ·  список обновлён $it" } ?: "")
+        val ratings = Community.ratings(this)
+        box.removeAllViews()
+        shown.forEachIndexed { i, e ->
+            if (i > 0) box.addView(View(this).apply { setBackgroundColor(LINE); layoutParams = LinearLayout.LayoutParams(MATCH, dp(1)) })
+            box.addView(catalogRow(e, ratings[e.url.lowercase()]?.takeIf { it.boxes >= Community.MIN_BOXES }, have))
+        }
+        if (shown.isEmpty()) box.addView(tv("Здесь пусто", 14f, MUTED).apply { setPadding(dp(16), dp(20), dp(16), dp(20)) })
+    }
+
+    private fun catalogRow(e: Community.Entry, r: Community.Rating?, have: MutableSet<String>): View {
+        val row = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            isFocusable = true
+            isClickable = true
+            minimumHeight = dp(52)
+            setPadding(dp(14), dp(8), dp(14), dp(8))
+        }
+        val scoreBox = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.BOTTOM
+            layoutParams = col(if (narrow) dp(64) else dp(84))
+        }
+        val scoreColor = when { r == null -> DIM; e.dead -> DIM; r.score >= 7 -> TEXT; r.score >= 4 -> WARN; else -> BAD }
+        scoreBox.addView(tv(r?.score?.toString() ?: "—", 18f, scoreColor, medium))
+        if (r != null) scoreBox.addView(tv(" (${r.boxes})", 11f, DIM).apply { setPadding(0, 0, 0, dp(2)) })
+        row.addView(scoreBox)
+
+        val nameCol = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            layoutParams = col(-15)
+        }
+        val nameLine = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL }
+        nameLine.addView(tv(e.name, 15f, if (e.dead) DIM else TEXT, medium).apply { singleLine() })
+        if (e.recommended) nameLine.addView(TextView(this).apply {
+            text = "РЕКОМЕНДУЕМ"
+            textSize = 9f
+            letterSpacing = 0.08f
+            typeface = Typeface.DEFAULT_BOLD
+            setTextColor(Color.rgb(207, 224, 255))
+            background = rounded(Color.rgb(26, 43, 74), dp(4))
+            setPadding(dp(6), dp(2), dp(6), dp(2))
+            layoutParams = LinearLayout.LayoutParams(WRAP, WRAP).apply { leftMargin = dp(10) }
+        })
+        nameCol.addView(nameLine)
+        val langs = e.lang.split(',').filter { it.isNotBlank() }.map(::langLabel)
+        if (narrow) nameCol.addView(tv(langs.joinToString(" · ") + if (e.dead) "  ·  не отвечает" else "",
+            11f, if (e.dead) BAD else DIM))
+        row.addView(nameCol)
+        if (!narrow) {
+            row.addView(LinearLayout(this).apply {
+                orientation = LinearLayout.HORIZONTAL
+                layoutParams = col(-11)
+                langs.forEach { addView(tag(it)) }
+            })
+            row.addView(LinearLayout(this).apply {
+                orientation = LinearLayout.HORIZONTAL
+                gravity = Gravity.CENTER_VERTICAL
+                layoutParams = col(dp(130))
+                addView(dot(if (e.dead) BAD else OK).apply { (layoutParams as LinearLayout.LayoutParams).rightMargin = dp(10) })
+                addView(tv(if (e.dead) "Не отвечает" else "Работает", 13f, MUTED))
+            })
+        }
+        val action = tv("", 12f, 0, medium).apply {
+            gravity = Gravity.CENTER
+            setPadding(dp(12), dp(5), dp(12), dp(5))
+        }
+        row.addView(LinearLayout(this).apply {
+            gravity = Gravity.END or Gravity.CENTER_VERTICAL
+            layoutParams = col(dp(140))
+            addView(action)
+        })
+        fun showAction() {
+            val on = e.url.lowercase() in have
+            // connected: green-tinted row and a filled green badge; not connected: an outlined "+" button
+            row.background = if (on) states(
+                focused = shape(Color.rgb(22, 46, 37), Color.WHITE, dp(2), dp(8)),
+                normal = shape(Color.rgb(14, 31, 25), 0, 0, dp(8)))
+            else rowBg()
+            action.text = if (on) "✓  Подключён" else "+  Подключить"
+            action.setTextColor(if (on) OK else if (e.dead) MUTED else ACCENT)
+            action.background = if (on) rounded(Color.rgb(20, 58, 44), dp(14))
+            else shape(Color.TRANSPARENT, if (e.dead) LINE else ACCENT, dp(1), dp(14))
+        }
+        showAction()
+        row.setOnClickListener {
+            if (e.url.lowercase() in have) {
+                val cur = Store.sources(this).toMutableList()
+                cur.removeAll { Store.normalizeUrl(it.url).equals(e.url, true) }
+                Store.dismiss(this, e.url)
+                Store.saveSources(this, cur)
+                have.remove(e.url.lowercase())
+            } else {
+                Community.addFromCatalog(this, e)
+                have.add(e.url.lowercase())
+            }
+            showAction()
+            refreshStatus()
+            // chip counters follow the change; the list itself stays, so the remote keeps its place
+            val all = catalogEntries()
+            val counts = listOf(all.size, all.count { it.url.lowercase() in have },
+                all.count { it.url.lowercase() !in have }, all.count { it.recommended }, all.count { it.dead })
+            val names = listOf("Все", "Подключены", "Не подключены", "Рекомендуемые", "Не отвечают")
+            catalogChips.forEachIndexed { i, c -> c.text = "${names[i]}  ${counts[i]}" }
+        }
+        return row
+    }
+
+    // ---------- page: request log ----------
+
+    private fun logPage(): View {
+        val outer = pageFrame("Журнал запросов", "Последние поиски плееров и ответы источников")
+        logText = tv("", 12f, MUTED).apply {
+            typeface = Typeface.MONOSPACE
+            setLineSpacing(0f, 1.25f)
+        }
+        outer.addView(ScrollView(this).apply {
+            isFocusable = true // the remote scrolls it
+            background = states(focused = shape(PANEL, Color.WHITE, dp(2), dp(12)), normal = shape(PANEL, LINE, dp(1), dp(12)))
+            setPadding(dp(18), dp(14), dp(18), dp(14))
+            layoutParams = LinearLayout.LayoutParams(MATCH, 0, 1f)
+            addView(logText)
+        })
+        return outer
+    }
+
+    // ---------- page: updates ----------
+
+    private fun updatesPage(): View {
+        val outer = pageFrame("Обновления",
+            "Новые версии приходят с GitHub, без Google Play. Android всегда спрашивает перед установкой")
+        val checkBtn = button("Проверить сейчас", R.drawable.ic_refresh) { btn ->
+            if (!Store.allow(this, "update-check", 10_000)) return@button
+            btn.isEnabled = false
+            btn.alpha = 0.5f
+            Toast.makeText(this, "Проверяю обновления…", Toast.LENGTH_SHORT).show()
+            Updater.checkNow(this) { msg ->
+                ui.post {
+                    btn.isEnabled = true
+                    btn.alpha = 1f
+                    refreshStatus()
+                    Toast.makeText(this, msg, Toast.LENGTH_LONG).show()
+                }
+            }
+        }
+        outer.addView(settingRow("Установлена версия ${BuildConfig.VERSION_NAME}",
+            tv("Проверяется само раз в сутки и при открытии приложения", 12f, MUTED), checkBtn))
+        installTitle = tv("", 15f, TEXT, medium)
+        installRow = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            setPadding(dp(16), dp(14), dp(16), dp(14))
+            background = shape(Color.rgb(20, 33, 58), Color.rgb(44, 74, 124), dp(1), dp(12))
+            layoutParams = LinearLayout.LayoutParams(MATCH, WRAP).apply { topMargin = dp(10) }
+            visibility = View.GONE
+            addView(LinearLayout(this@MainActivity).apply {
+                orientation = LinearLayout.VERTICAL
+                layoutParams = LinearLayout.LayoutParams(0, WRAP, 1f).apply { rightMargin = dp(16) }
+                addView(installTitle)
+                addView(tv("Уже скачана и проверена: это JacCollector с той же подписью", 12f,
+                    Color.rgb(143, 169, 214)).apply { setPadding(0, dp(3), 0, 0) })
+            })
+            addView(button("Установить", R.drawable.ic_plus, primary = true) { onUpdatePressed() }
+                .apply { (layoutParams as LinearLayout.LayoutParams).leftMargin = 0 })
+        }
+        outer.addView(installRow)
+        return outer
+    }
+
+    /** Compact "Shared list  ON/OFF" button next to the page title; OK asks before switching. */
+    private fun shareToggle(): View {
+        switchPill = TextView(this).apply {
+            textSize = 10f
+            typeface = Typeface.DEFAULT_BOLD
+            letterSpacing = 0.08f
+            gravity = Gravity.CENTER
+            setPadding(dp(10), dp(3), dp(10), dp(3))
+            layoutParams = LinearLayout.LayoutParams(WRAP, WRAP).apply { leftMargin = dp(10) }
+        }
+        val t = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            isFocusable = true
+            isClickable = true
+            setPadding(dp(16), dp(9), dp(12), dp(9))
+            background = states(focused = shape(PANEL2, Color.WHITE, dp(2), dp(8)), normal = shape(PANEL2, LINE, dp(1), dp(8)))
+            layoutParams = LinearLayout.LayoutParams(WRAP, WRAP).apply { leftMargin = dp(10) }
+            addView(tv("Общий список", 14f, TEXT, medium))
+            addView(switchPill)
+            setOnClickListener { onCommunityToggle(!Store.shareEnabled(this@MainActivity)) }
+        }
+        switchRow = t
+        updateSwitch()
+        return t
+    }
+
+    /** While the shared list is off there is no table, so the page explains both positions. */
+    private fun shareExplain(): View {
+        val box = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            background = shape(PANEL, LINE, dp(1), dp(12))
+            setPadding(dp(18), dp(14), dp(18), dp(16))
+        }
+        box.addView(tv("Общий список выключен", 16f, TEXT, medium))
+        shareOnText = tv("ВКЛ — серверы из общего списка приходят сами; взамен уходят рабочие публичные " +
+            "адреса, которые вы добавили: адрес, число русскоязычных раздач на нём, язык системы и анонимный номер установки.",
+            13f, DIM).apply { setPadding(0, dp(10), 0, 0); setLineSpacing(0f, 1.15f) }
+        shareOffText = tv("ВЫКЛ — ничего не отправляется и не скачивается; работают только личные серверы " +
+            "(домашние или с API-ключом). Поисковые запросы и ключи не уходят никогда.",
+            13f, DIM).apply { setPadding(0, dp(8), 0, 0); setLineSpacing(0f, 1.15f) }
+        box.addView(shareOnText)
+        box.addView(shareOffText)
+        box.addView(tv("Включить — кнопка «Общий список» справа вверху.", 12f, MUTED).apply { setPadding(0, dp(12), 0, 0) })
+        updateSwitch()
+        return box
+    }
+
+    private fun syncShort(): String? = Store.lastSync(this).takeIf { it > 0 }?.let {
+        java.text.SimpleDateFormat("dd.MM в HH:mm", java.util.Locale.US).format(java.util.Date(it))
+    }
+
+    /** One settings card: title and explanation on the left, a control on the right. */
+    private fun settingRow(title: String, sub: TextView, control: View, onClick: (() -> Unit)? = null): View {
+        val row = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            setPadding(dp(16), dp(14), dp(16), dp(14))
+            background = if (onClick != null) states(
+                focused = shape(PANEL2, Color.WHITE, dp(2), dp(12)), normal = shape(PANEL, LINE, dp(1), dp(12)))
+            else shape(PANEL, LINE, dp(1), dp(12))
+            if (onClick != null) {
+                isFocusable = true
+                isClickable = true
+                setOnClickListener { onClick() }
+            }
+        }
+        row.addView(LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            layoutParams = LinearLayout.LayoutParams(0, WRAP, 1f).apply { rightMargin = dp(16) }
+            addView(tv(title, 15f, TEXT, medium))
+            addView(sub.apply { setPadding(0, dp(3), 0, 0) })
+        })
+        (control.layoutParams as? LinearLayout.LayoutParams)?.leftMargin = 0
+        row.addView(control)
+        return row
+    }
+
+    private fun updateSwitch() {
+        val on = Store.shareEnabled(this)
+        switchPill?.apply {
+            text = if (on) "ВКЛ" else "ВЫКЛ"
+            setTextColor(if (on) Color.WHITE else MUTED)
+            background = rounded(if (on) ACCENT else LINE, dp(12))
+        }
+        shareOnText?.setTextColor(if (on) TEXT else DIM)
+        shareOffText?.setTextColor(if (on) DIM else TEXT)
+    }
 
     private fun showSync() {
         val t = Store.lastSync(this)
-        syncInfo.text = "Общий список обновляется автоматически раз в сутки и когда вы его открываете" + if (t > 0)
-            ", последний раз: " + java.text.SimpleDateFormat("dd.MM HH:mm", java.util.Locale.US)
+        syncInfo?.text = if (!Store.shareEnabled(this)) "Выключено — только личные серверы"
+        else "Обновляется сам раз в сутки" + if (t > 0)
+            ", последний раз " + java.text.SimpleDateFormat("dd.MM в HH:mm", java.util.Locale.US)
                 .format(java.util.Date(t)) else ""
-    }
-
-    /** Catalog, update and "standard list" exist only while the shared list is used. */
-    private fun applyCommunityUi() {
-        val on = Store.shareEnabled(this)
-        val v = if (on) View.VISIBLE else View.GONE
-        catalogBtn.visibility = v
-        syncInfo.visibility = v
     }
 
     /** Either-or: switching off removes everything public, switching on brings it back. */
     private fun onCommunityToggle(on: Boolean) {
         if (on) {
-            Store.setShareEnabled(this, true)
-            applyCommunityUi()
-            syncInfo.text = "Загружаю общий список…"
-            Thread {
-                Community.restorePublic(applicationContext)
-                ui.post { buildSources(); showSync() }
-            }.start()
+            // switching on also starts sending, so it is confirmed just like switching off
+            AlertDialog.Builder(this)
+                .setTitle("Включить общий список?")
+                .setMessage("Серверы из общего списка будут приходить сами. Взамен в общий список " +
+                    "уйдут рабочие публичные адреса, которые вы добавили: адрес, число русскоязычных " +
+                    "раздач на нём, язык системы и анонимный номер установки. Поисковые запросы, домашние " +
+                    "адреса и ключи не уходят никогда.")
+                .setPositiveButton("Включить") { _, _ ->
+                    Store.setShareEnabled(this, true)
+                    reopenLoadPage()
+                    syncInfo?.text = "Загружаю общий список…"
+                    Thread {
+                        Community.restorePublic(applicationContext)
+                        ui.post { buildSources(); showSync(); renderCatalog(); refreshStatus() }
+                    }.start()
+                }
+                .setNegativeButton("Отмена", null)
+                .show()
             return
         }
         val publicCount = Store.sources(this).count { it.isPublic || !Community.isPersonal(it) }
@@ -422,80 +1167,16 @@ class MainActivity : Activity() {
             .setPositiveButton("Отключить") { _, _ ->
                 Store.setShareEnabled(this, false)
                 Community.keepOnlyPersonal(this)
-                applyCommunityUi()
-                buildSources()
+                reopenLoadPage()
             }
-            .setNegativeButton("Отмена") { _, _ -> communityBox.isChecked = true }
-            .setOnCancelListener { communityBox.isChecked = true }
+            .setNegativeButton("Отмена", null)
             .show()
     }
 
-    /** The whole public list: add or remove any server. */
-    private var catalogLoading = false
-
-    private fun catalogDialog() {
-        // one load at a time; the catalog itself is downloaded at most every 10 minutes
-        if (catalogLoading) return
-        catalogLoading = true
-        Thread {
-            // opening the catalog also applies the public list (new recommended servers,
-            // dead ones switched off); the download itself happens at most every 10 minutes
-            val fresh = System.currentTimeMillis() - Store.catalogTime(applicationContext) >= 10 * 60 * 1000L
-            if (fresh) Community.syncNow(applicationContext)
-            val cat = Community.catalog(applicationContext)
-            ui.post {
-                catalogLoading = false
-                buildSources()
-                showSync()
-                if (cat == null || cat.entries.isEmpty()) {
-                    Toast.makeText(this, "Общий список недоступен, попробуйте позже", Toast.LENGTH_LONG).show()
-                    return@post
-                }
-                val myLang = Community.deviceLang()
-                val ratings = Community.ratings(this)
-                fun rating(e: Community.Entry) = ratings[e.url.lowercase()]?.takeIf { it.boxes >= Community.MIN_BOXES }
-                // language first (own language on top), then the best rated; dead and unrated last
-                val entries = cat.entries
-                    .filter { it.url.lowercase() !in cat.removed }
-                    .sortedWith(compareBy<Community.Entry>(
-                        { Store.priority(Source(it.name, it.url, lang = it.lang), myLang) },
-                        { if (it.dead) 1 else 0 },
-                        { -(rating(it)?.score ?: -1) },
-                        { -(rating(it)?.boxes ?: 0) }))
-                val have = Store.sources(this).map { Store.normalizeUrl(it.url).lowercase() }.toSet()
-                val anyRated = entries.any { rating(it) != null }
-                val labels: Array<CharSequence> = entries.map { e ->
-                    val mark = if (e.url.lowercase() in have) "✅" else "➕"
-                    val star = if (e.recommended) "  ⭐" else ""
-                    val dead = if (e.dead) "  💀" else ""
-                    SpannableStringBuilder("$mark  ")
-                        .append(if (anyRated) SpannableStringBuilder(ratingText(rating(e))).append(" ") else "")
-                        .append("${e.name}   [${Store.flags(e.lang.split(','))}]$star$dead")
-                }.toTypedArray()
-                val dlg = AlertDialog.Builder(this)
-                    .setItems(labels) { _, i ->
-                        val e = entries[i]
-                        if (e.url.lowercase() in have) {
-                            val cur = Store.sources(this).toMutableList()
-                            cur.removeAll { Store.normalizeUrl(it.url).equals(e.url, true) }
-                            Store.dismiss(this, e.url)
-                            Store.saveSources(this, cur)
-                        } else {
-                            Community.addFromCatalog(this, e)
-                        }
-                        buildSources()
-                    }
-                    .setNegativeButton("Закрыть", null)
-                    .create()
-                // just the list; a small legend at the bottom explains the marks
-                dlg.listView.addFooterView(text(
-                    "✅ используется · ➕ добавить · ⭐ рекомендуем · 💀 не работает · " +
-                        "оценка 0–10, в скобках — сколько приставок отметилось",
-                    12f, Color.rgb(150, 160, 170)).apply { setPadding(dp(24), dp(12), dp(24), dp(4)) },
-                    null, false)
-                dlg.show()
-            }
-        }.start()
+    private fun reopenLoadPage() {
+        if (page != Page.CATALOG) return
+        showPage(Page.CATALOG)
+        switchRow?.requestFocus()
     }
 
     // ---------- donations ----------
@@ -511,19 +1192,21 @@ class MainActivity : Activity() {
             orientation = LinearLayout.VERTICAL
             gravity = Gravity.CENTER_HORIZONTAL
             setPadding(dp(24), 0, dp(24), 0)
-            addView(text(title, 18f, Color.WHITE).apply { gravity = Gravity.CENTER })
+            addView(tv(title, 18f, Color.WHITE, medium).apply { gravity = Gravity.CENTER })
             addView(ImageView(this@MainActivity).apply {
                 setImageResource(qr)
-                layoutParams = LinearLayout.LayoutParams(dp(180), dp(180))
+                layoutParams = LinearLayout.LayoutParams(dp(180), dp(180)).apply { topMargin = dp(8); bottomMargin = dp(8) }
             })
-            addView(text(url.removePrefix("https://"), 13f, Color.LTGRAY).apply { gravity = Gravity.CENTER })
-            addView(button("Открыть") { openLink(url) })
+            addView(tv(url.removePrefix("https://"), 13f, Color.LTGRAY).apply { gravity = Gravity.CENTER })
+            addView(button("Открыть", null) { openLink(url) }.apply {
+                (layoutParams as LinearLayout.LayoutParams).apply { leftMargin = 0; topMargin = dp(8) }
+            })
         }
         box.addView(column("Boosty", BOOSTY, R.drawable.qr_boosty))
         box.addView(column("Ko-fi", KOFI, R.drawable.qr_kofi))
         val wrap = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            addView(text("Наведите камеру телефона на QR-код. Спасибо!", 14f, Color.LTGRAY).apply {
+            addView(tv("Наведите камеру телефона на QR-код. Спасибо!", 14f, Color.LTGRAY).apply {
                 gravity = Gravity.CENTER
                 setPadding(dp(16), dp(8), dp(16), 0)
             })
@@ -545,70 +1228,21 @@ class MainActivity : Activity() {
         }
     }
 
-    private fun probe(btn: View) {
-        // anti-spam: every 30 s at most, button off while checking
-        if (!Store.allow(this, "probe_btn", 30_000)) {
-            Toast.makeText(this, "Проверка только что была, можно снова через " +
-                "${Store.waitSeconds(this, "probe_btn", 30_000)} с", Toast.LENGTH_SHORT).show()
-            return
-        }
-        btn.isEnabled = false
-        serverText.text = "Проверяю источники…"
-        Thread {
-            Aggregator.probe(applicationContext)
-            ui.post { btn.isEnabled = true; refreshStatus() }
-        }.start()
-    }
-
-    private fun nextDeadline() {
-        val all = Store.DEADLINES
-        val cur = Store.deadlineMs(this)
-        val next = all[(all.indexOf(cur) + 1) % all.size]
-        Store.setDeadlineMs(this, next)
-        updateDeadline()
-    }
-
-    private fun updateDeadline() {
-        deadlineBtn.text = "⏱ Ждать источники: %.1f с".format(Store.deadlineMs(this) / 1000.0)
-    }
-
     // ---------- status ----------
 
     private fun refreshStatus() {
         showUpdate()
-        val srv = CollectorService.server
-        serverText.text = when {
-            srv?.error != null -> "Ошибка сервера: ${srv.error}"
-            srv?.running == true -> "Сервер работает: http://127.0.0.1:${Store.PORT}" +
-                (lanIp()?.let { "   ·   в домашней сети: http://$it:${Store.PORT}" } ?: "")
-            else -> "Сервер запускается…"
-        }
-        val now = System.currentTimeMillis()
-        for (src in Store.sources(this)) {
-            val tv = statusViews[src.name] ?: continue
-            val st = Aggregator.states[src.name]
-            val (msg, color) = when {
-                src.communityOff -> "не работает по данным других пользователей" to Color.rgb(200, 110, 100)
-                !src.enabled -> "выключен" to Color.rgb(120, 120, 120)
-                st != null && st.rateLimitedUntil > now ->
-                    "отдыхает ${(st.rateLimitedUntil - now) / 60000 + 1} мин — сервер просит подождать (HTTP 429)" to
-                        Color.rgb(230, 120, 100)
-                st == null || st.lastAt == 0L -> "ещё не опрашивался" to Color.rgb(150, 160, 170)
-                st.benchedUntil > now ->
-                    "отдыхает ${(st.benchedUntil - now) / 60000 + 1} мин — ${st.lastError}" to Color.rgb(230, 120, 100)
-                st.lastError != null -> "ошибка: ${st.lastError}" to Color.rgb(230, 170, 90)
-                else -> "работает · ${st.lastCount} шт · ${st.lastMs} мс" to Color.rgb(120, 220, 140)
-            }.let { (m, c) ->
-                // careful mode: this server dislikes bursts, so requests to it are spaced out
-                val gap = st?.gapMs ?: 0
-                (if (gap > 0) "$m · бережно: не чаще раза в ${(gap + 999) / 1000} с" else m) to c
+        navCounts[Page.SOURCES]?.text = Store.sources(this).size.let { if (it > 0) "$it" else "" }
+        navCounts[Page.CATALOG]?.text = if (Store.shareEnabled(this)) catalogEntries().size.let { if (it > 0) "$it" else "" } else ""
+        when (page) {
+            Page.SOURCES -> refreshSources()
+            Page.UPDATES -> Updater.ready(this).let { r ->
+                installRow?.visibility = if (r != null) View.VISIBLE else View.GONE
+                if (r != null) installTitle?.text = "Доступна версия ${r.version}"
             }
-            tv.text = "${src.url}  —  $msg"
-            tv.setTextColor(color)
-            val mark = when { src.communityOff -> "⚠"; src.enabled -> "✅"; else -> "⛔" }
-            titleViews[src.name]?.text = cardTitle(src, mark)
+            Page.LOG -> logText?.text = RequestLog.all().joinToString("\n").ifEmpty { "Пока ничего — запросы появятся, когда плеер начнёт искать" }
+            else -> {}
         }
-        logText.text = RequestLog.all().joinToString("\n").ifEmpty { "пока ничего" }
     }
 
     private fun lanIp(): String? = try {
@@ -620,86 +1254,16 @@ class MainActivity : Activity() {
         null
     }
 
-    // ---------- helpers ----------
-
-    private fun dp(v: Int) = (v * resources.displayMetrics.density).toInt()
-
-    private fun text(s: CharSequence, size: Float, color: Int) = TextView(this).apply {
-        text = s
-        textSize = size
-        setTextColor(color)
-        setPadding(0, dp(4), 0, dp(4))
-    }
-
-    private fun button(label: String, onClick: (View) -> Unit) = Button(this).apply {
-        text = label
-        isAllCaps = false
-        textSize = 16f
-        setTextColor(Color.WHITE)
-        setPadding(dp(20), dp(10), dp(20), dp(10))
-        background = focusBackground(Color.rgb(58, 66, 78), dp(6))
-        layoutParams = LinearLayout.LayoutParams(
-            LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT
-        ).apply { setMargins(0, dp(6), dp(12), dp(6)) }
-        setOnClickListener(onClick)
-        growOnFocus(this)
-    }
-
-    /**
-     * TV remotes need an obvious focus: bright blue with a white frame when focused,
-     * [normal] otherwise.
-     */
-    private fun focusBackground(normal: Int, radius: Int): StateListDrawable {
-        fun shape(fill: Int, stroke: Int, strokeW: Int) = GradientDrawable().apply {
-            cornerRadius = radius.toFloat()
-            setColor(fill)
-            if (strokeW > 0) setStroke(strokeW, stroke)
-        }
-        val focused = shape(Color.rgb(30, 136, 229), Color.WHITE, dp(3))
-        return StateListDrawable().apply {
-            addState(intArrayOf(android.R.attr.state_focused), focused)
-            addState(intArrayOf(android.R.attr.state_pressed), focused)
-            addState(intArrayOf(), shape(normal, 0, 0))
-        }
-    }
-
     // ---------- self-update ----------
-
-    /** Blinking badge "⬆ Обновить до X": colors flow between orange and green. */
-    private fun updateBadge(): Button {
-        val fill = GradientDrawable().apply { cornerRadius = dp(18).toFloat(); setColor(Color.rgb(245, 124, 0)) }
-        val focused = GradientDrawable().apply {
-            cornerRadius = dp(18).toFloat()
-            setColor(Color.rgb(30, 136, 229))
-            setStroke(dp(3), Color.WHITE)
-        }
-        val b = button("") { onUpdatePressed() }
-        b.background = StateListDrawable().apply {
-            addState(intArrayOf(android.R.attr.state_focused), focused)
-            addState(intArrayOf(android.R.attr.state_pressed), focused)
-            addState(intArrayOf(), fill)
-        }
-        b.visibility = View.GONE
-        updatePulse = android.animation.ValueAnimator.ofArgb(Color.rgb(245, 124, 0), Color.rgb(67, 160, 71)).apply {
-            duration = 900
-            repeatMode = android.animation.ValueAnimator.REVERSE
-            repeatCount = android.animation.ValueAnimator.INFINITE
-            addUpdateListener { fill.setColor(it.animatedValue as Int) }
-        }
-        return b
-    }
 
     private fun showUpdate() {
         val r = Updater.ready(this)
         if (r == null) {
-            if (updateBtn.visibility != View.GONE) { updateBtn.visibility = View.GONE; updatePulse?.cancel() }
+            updateCard.visibility = View.GONE
             return
         }
-        updateBtn.text = "⬆ Обновить до ${r.version}"
-        if (updateBtn.visibility != View.VISIBLE) {
-            updateBtn.visibility = View.VISIBLE
-            updatePulse?.start()
-        }
+        updateTitle.text = "Доступна версия ${r.version}"
+        updateCard.visibility = View.VISIBLE
     }
 
     private fun onUpdatePressed() {
@@ -707,16 +1271,98 @@ class MainActivity : Activity() {
         if (hint != null) Toast.makeText(this, hint, Toast.LENGTH_LONG).show()
     }
 
-    private fun growOnFocus(v: View) {
-        v.setOnFocusChangeListener { view, has ->
-            val s = if (has) 1.06f else 1f
-            view.animate().scaleX(s).scaleY(s).setDuration(120).start()
-        }
+    // ---------- building blocks ----------
+
+    private fun dp(v: Int) = (v * resources.displayMetrics.density).toInt()
+
+    private fun tv(s: CharSequence, size: Float, color: Int, face: Typeface? = null) = TextView(this).apply {
+        text = s
+        textSize = size
+        setTextColor(color)
+        if (face != null) typeface = face
+        includeFontPadding = true
     }
 
-    /** Checkbox rows get the same visible focus as buttons. */
-    private fun styleCheckBox(cb: CheckBox) {
-        cb.background = focusBackground(Color.TRANSPARENT, dp(6))
-        cb.setPadding(dp(8), dp(6), dp(16), dp(6))
+    private fun TextView.singleLine() {
+        maxLines = 1
+        ellipsize = TextUtils.TruncateAt.END
+    }
+
+    /** Small uppercase column / tile caption. */
+    private fun caption(s: String) = tv(s.uppercase(), 10f, DIM).apply { letterSpacing = 0.1f }
+
+    private fun tag(s: String) = TextView(this).apply {
+        text = s
+        textSize = 10f
+        letterSpacing = 0.03f
+        maxLines = 1
+        setTextColor(MUTED)
+        background = shape(Color.TRANSPARENT, LINE, dp(1), dp(4))
+        setPadding(dp(5), dp(2), dp(5), dp(2))
+        layoutParams = LinearLayout.LayoutParams(WRAP, WRAP).apply { rightMargin = dp(6) }
+    }
+
+    private fun dot(color: Int) = View(this).apply {
+        background = circle(color)
+        layoutParams = LinearLayout.LayoutParams(dp(8), dp(8))
+    }
+
+    private fun circle(color: Int) = GradientDrawable().apply { shape = GradientDrawable.OVAL; setColor(color) }
+
+    private fun rounded(color: Int, radius: Int) = GradientDrawable().apply { cornerRadius = radius.toFloat(); setColor(color) }
+
+    private fun shape(fill: Int, stroke: Int, strokeW: Int, radius: Int) = GradientDrawable().apply {
+        cornerRadius = radius.toFloat()
+        setColor(fill)
+        if (strokeW > 0) setStroke(strokeW, stroke)
+    }
+
+    private fun states(focused: GradientDrawable, normal: GradientDrawable, selected: GradientDrawable? = null) =
+        StateListDrawable().apply {
+            addState(intArrayOf(android.R.attr.state_focused), focused)
+            addState(intArrayOf(android.R.attr.state_pressed), focused)
+            if (selected != null) addState(intArrayOf(android.R.attr.state_selected), selected)
+            addState(intArrayOf(), normal)
+        }
+
+    /** Table row: invisible until the remote is on it, then a lighter fill with a white frame. */
+    private fun rowBg() = states(focused = shape(PANEL2, Color.WHITE, dp(2), dp(8)), normal = shape(Color.TRANSPARENT, 0, 0, dp(8)))
+
+    private fun button(label: String, icon: Int?, primary: Boolean = false, onClick: (View) -> Unit) = TextView(this).apply {
+        text = label
+        textSize = 14f
+        typeface = medium
+        setTextColor(if (primary) Color.WHITE else TEXT)
+        gravity = Gravity.CENTER_VERTICAL
+        isFocusable = true
+        isClickable = true
+        setPadding(dp(16), dp(10), dp(16), dp(10))
+        val fill = if (primary) ACCENT else PANEL2
+        background = states(focused = shape(fill, Color.WHITE, dp(2), dp(8)), normal = shape(fill, if (primary) ACCENT else LINE, dp(1), dp(8)))
+        if (icon != null) {
+            val d = getDrawable(icon)!!.mutate()
+            d.setBounds(0, 0, dp(16), dp(16))
+            d.setTint(if (primary) Color.WHITE else TEXT)
+            setCompoundDrawables(d, null, null, null)
+            compoundDrawablePadding = dp(8)
+        }
+        layoutParams = LinearLayout.LayoutParams(WRAP, WRAP).apply { leftMargin = dp(10) }
+        setOnClickListener(onClick)
+    }
+
+    private fun chip(label: String) = TextView(this).apply {
+        text = label
+        textSize = 13f
+        isFocusable = true
+        isClickable = true
+        setPadding(dp(14), dp(7), dp(14), dp(7))
+        setTextColor(ColorStateList(arrayOf(intArrayOf(android.R.attr.state_selected), intArrayOf()), intArrayOf(BG, MUTED)))
+        background = StateListDrawable().apply {
+            addState(intArrayOf(android.R.attr.state_focused, android.R.attr.state_selected), shape(TEXT, ACCENT, dp(2), dp(16)))
+            addState(intArrayOf(android.R.attr.state_focused), shape(PANEL2, Color.WHITE, dp(2), dp(16)))
+            addState(intArrayOf(android.R.attr.state_selected), shape(TEXT, TEXT, dp(1), dp(16)))
+            addState(intArrayOf(), shape(Color.TRANSPARENT, LINE, dp(1), dp(16)))
+        }
+        layoutParams = LinearLayout.LayoutParams(WRAP, WRAP).apply { rightMargin = dp(8) }
     }
 }
