@@ -1,8 +1,8 @@
 {
-  "version": 4,
+  "version": 5,
   "sources": [
-    { "name": "jac.black", "url": "https://jac.black", "lang": "ru,uk,en", "recommended": true },
-    { "name": "jr.maxvol.pro", "url": "https://jr.maxvol.pro", "lang": "ru", "recommended": true },
+    { "name": "jac.black", "url": "https://jac.black", "lang": "ru,uk,en" },
+    { "name": "jr.maxvol.pro", "url": "https://jr.maxvol.pro", "lang": "ru" },
     { "name": "jacred.su", "url": "https://jacred.su", "lang": "ru", "recommended": true },
     { "name": "jac.red", "url": "https://jac.red", "lang": "ru", "recommended": true },
     { "name": "lampa.app", "url": "https://lampa.app", "lang": "ru" },
