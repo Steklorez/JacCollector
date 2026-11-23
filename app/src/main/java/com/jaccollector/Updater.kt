@@ -66,13 +66,36 @@ object Updater {
         }, "update").start()
     }
 
-    private fun check(ctx: Context) {
+    /**
+     * "Check for updates" button: checks right now and reports the result in plain words
+     * (on a background thread; [done] is called on that thread).
+     */
+    fun checkNow(ctx: Context, done: (String) -> Unit) {
+        val app = ctx.applicationContext
+        Thread({
+            val msg = try {
+                when (val r = check(app)) {
+                    null -> "GitHub не ответил, попробуйте позже"
+                    else -> if (compare(r, BuildConfig.VERSION_NAME) <= 0)
+                        "Установлена последняя версия ${BuildConfig.VERSION_NAME}"
+                    else "Версия $r скачана — нажмите «Обновить» вверху справа"
+                }
+            } catch (e: Exception) {
+                "Не удалось скачать обновление: ${e.message}"
+            }
+            done(msg)
+        }, "update-now").start()
+    }
+
+    /** Returns the latest version on GitHub (downloading it if newer), or null if GitHub did not answer. */
+    @Synchronized
+    private fun check(ctx: Context): String? {
         val p = prefs(ctx)
         cleanup(ctx)
-        val latest = latestVersion() ?: return
+        val latest = latestVersion() ?: return null
         p.edit().putLong("checkedAt", System.currentTimeMillis()).apply()
-        if (compare(latest, BuildConfig.VERSION_NAME) <= 0) return
-        if (ready(ctx)?.version == latest) return
+        if (compare(latest, BuildConfig.VERSION_NAME) <= 0) return latest
+        if (ready(ctx)?.version == latest) return latest
         RequestLog.add("update: $latest available, downloading")
         val tmp = File(dir(ctx), "download.tmp")
         download("$BASE/releases/download/v$latest/JacCollector.apk", tmp)
@@ -82,6 +105,7 @@ object Updater {
         if (!tmp.renameTo(f)) throw RuntimeException("rename failed")
         p.edit().putString("version", latest).apply()
         RequestLog.add("update: $latest downloaded")
+        return latest
     }
 
     /** "1.1.4" from the redirect of releases/latest to .../tag/v1.1.4, or null. */

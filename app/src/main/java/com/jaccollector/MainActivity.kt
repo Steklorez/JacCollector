@@ -69,7 +69,10 @@ class MainActivity : Activity() {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
         }
-        top.addView(text("JacCollector", 26f, Color.WHITE).apply {
+        top.addView(text(SpannableStringBuilder("JacCollector").append("  ${BuildConfig.VERSION_NAME}").also {
+            it.setSpan(ForegroundColorSpan(Color.rgb(140, 150, 160)), 12, it.length, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
+            it.setSpan(android.text.style.RelativeSizeSpan(0.6f), 12, it.length, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
+        }, 26f, Color.WHITE).apply {
             layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
         })
         updateBtn = updateBadge()
@@ -127,6 +130,26 @@ class MainActivity : Activity() {
             12f, Color.GRAY))
         syncInfo = text("", 13f, Color.rgb(150, 160, 170))
         root.addView(syncInfo)
+        // version and a manual update check (otherwise it happens by itself once a day)
+        val ver = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            setPadding(0, dp(8), 0, 0)
+        }
+        ver.addView(text("Версия ${BuildConfig.VERSION_NAME}", 15f, Color.WHITE).apply { setPadding(0, 0, dp(24), 0) })
+        ver.addView(button("🔄 Проверить обновления") { btn ->
+            if (!Store.allow(this, "update-check", 10_000)) return@button
+            btn.isEnabled = false
+            Toast.makeText(this, "Проверяю обновления…", Toast.LENGTH_SHORT).show()
+            Updater.checkNow(this) { msg ->
+                ui.post {
+                    btn.isEnabled = true
+                    showUpdate()
+                    Toast.makeText(this, msg, Toast.LENGTH_LONG).show()
+                }
+            }
+        })
+        root.addView(ver)
         showSync()
         applyCommunityUi()
 
