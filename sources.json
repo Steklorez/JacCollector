@@ -1,12 +1,12 @@
 {
-  "version": 6,
+  "version": 7,
   "sources": [
     { "name": "jac.black", "url": "https://jac.black", "lang": "ru,uk,en" },
     { "name": "jr.maxvol.pro", "url": "https://jr.maxvol.pro", "lang": "ru", "recommended": true },
     { "name": "jacred.su", "url": "https://jacred.su", "lang": "ru", "recommended": true },
-    { "name": "jac.red", "url": "https://jac.red", "lang": "ru", "recommended": true },
+    { "name": "jac.red", "url": "https://jac.red", "lang": "ru" },
     { "name": "lampa.app", "url": "https://lampa.app", "lang": "ru" },
-    { "name": "jacred.freebie.tom.ru", "url": "https://jacred.freebie.tom.ru", "lang": "ru" },
+    { "name": "jacred.freebie.tom.ru", "url": "https://jacred.freebie.tom.ru", "lang": "ru", "recommended": true },
     { "name": "jac-red.ru", "url": "https://jac-red.ru", "lang": "ru,en" }
   ],
   "removed": ["https://jacred.xyz"]
