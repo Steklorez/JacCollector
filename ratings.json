@@ -1,0 +1,54 @@
+{
+ "updated": "2026-11-27T08:26:43Z",
+ "days": 7,
+ "servers": {
+  "https://jac-red.ru": {
+   "score": 9,
+   "boxes": 17,
+   "ok": 16,
+   "fail": 1
+  },
+  "https://jac.black": {
+   "score": 8,
+   "boxes": 58,
+   "ok": 47,
+   "fail": 11
+  },
+  "https://jac.red": {
+   "score": 5,
+   "boxes": 43,
+   "ok": 23,
+   "fail": 20
+  },
+  "https://jacred.freebie.tom.ru": {
+   "score": 10,
+   "boxes": 20,
+   "ok": 19,
+   "fail": 1
+  },
+  "https://jacred.su": {
+   "score": 9,
+   "boxes": 58,
+   "ok": 52,
+   "fail": 6
+  },
+  "https://jacred.xyz": {
+   "score": 0,
+   "boxes": 15,
+   "ok": 0,
+   "fail": 15
+  },
+  "https://jr.maxvol.pro": {
+   "score": 8,
+   "boxes": 59,
+   "ok": 49,
+   "fail": 10
+  },
+  "https://lampa.app": {
+   "score": 9,
+   "boxes": 17,
+   "ok": 16,
+   "fail": 1
+  }
+ }
+}
