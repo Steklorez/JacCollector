@@ -35,8 +35,9 @@ import java.net.NetworkInterface
  * The whole app on one screen with a side menu: Support, Active servers, Load (shared list and
  * its on/off switch), Request log, Updates.
  * Built for a TV remote: everything is a focusable row or button with a clear white frame.
- * Sizes are in dp, so a 1080p and a 4K TV look the same; on a narrow (phone) screen the menu
- * moves to the top and table rows fold into two lines.
+ * Sizes are in dp, so a 1080p and a 4K TV look the same. On a narrow (phone) screen the layout
+ * is a phone one: app bar with "Support" on top, the menu at the bottom, tables become cards,
+ * hints say "tap" instead of "OK".
  */
 class MainActivity : Activity() {
     companion object {
@@ -123,18 +124,42 @@ class MainActivity : Activity() {
 
         val root = RootLayout(this).apply {
             orientation = if (narrow) LinearLayout.VERTICAL else LinearLayout.HORIZONTAL
-            setBackgroundColor(BG)
+            setBackgroundColor(if (narrow) PANEL else BG)
+            // Android 15 draws apps under the status and gesture bars: keep the content out of them
+            setOnApplyWindowInsetsListener { v, ins ->
+                @Suppress("DEPRECATION")
+                v.setPadding(ins.systemWindowInsetLeft, ins.systemWindowInsetTop,
+                    ins.systemWindowInsetRight, ins.systemWindowInsetBottom)
+                ins
+            }
         }
-        rail = buildRail()
-        root.addView(rail)
-        root.addView(View(this).apply {
-            setBackgroundColor(LINE)
-            layoutParams = if (narrow) LinearLayout.LayoutParams(MATCH, dp(1)) else LinearLayout.LayoutParams(dp(1), MATCH)
-        })
+        if (narrow) {
+            window.statusBarColor = PANEL
+            window.navigationBarColor = PANEL
+        }
         content = FrameLayout(this).apply {
+            setBackgroundColor(BG)
             layoutParams = if (narrow) LinearLayout.LayoutParams(MATCH, 0, 1f) else LinearLayout.LayoutParams(0, MATCH, 1f)
         }
-        root.addView(content)
+        if (narrow) {
+            // phone: app bar on top, the update banner under it, the menu at the bottom
+            root.addView(buildTopBar())
+            updateCard = buildUpdateCard()
+            root.addView(updateCard)
+            root.addView(hline())
+            root.addView(content)
+            root.addView(hline())
+            rail = buildBottomNav()
+            root.addView(rail)
+        } else {
+            rail = buildRail()
+            root.addView(rail)
+            root.addView(View(this).apply {
+                setBackgroundColor(LINE)
+                layoutParams = LinearLayout.LayoutParams(dp(1), MATCH)
+            })
+            root.addView(content)
+        }
         setContentView(root)
         showPage(Page.SOURCES)
         // "Support" is the first menu item, but the remote starts on the active servers
@@ -171,7 +196,7 @@ class MainActivity : Activity() {
     private inner class RootLayout(c: Context) : LinearLayout(c) {
         override fun focusSearch(focused: View?, direction: Int): View? {
             val r = super.focusSearch(focused, direction)
-            val towardsMenu = if (narrow) View.FOCUS_UP else View.FOCUS_LEFT
+            val towardsMenu = if (narrow) View.FOCUS_DOWN else View.FOCUS_LEFT
             if (direction == towardsMenu && r != null && focused != null && inRail(r) && !inRail(focused)) {
                 return navItems[page] ?: r
             }
@@ -188,17 +213,118 @@ class MainActivity : Activity() {
         }
     }
 
+    // ---------- phone: app bar and bottom menu ----------
+
+    private fun hline() = View(this).apply {
+        setBackgroundColor(LINE)
+        layoutParams = LinearLayout.LayoutParams(MATCH, dp(1))
+    }
+
+    private fun brandBadge() = TextView(this).apply {
+        text = "JC"
+        textSize = 13f
+        typeface = Typeface.DEFAULT_BOLD
+        setTextColor(Color.WHITE)
+        gravity = Gravity.CENTER
+        background = rounded(ACCENT, dp(8))
+        layoutParams = LinearLayout.LayoutParams(dp(32), dp(32)).apply { rightMargin = dp(10) }
+    }
+
+    private fun buildTopBar(): View {
+        val bar = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            setPadding(dp(16), dp(10), dp(16), dp(10))
+        }
+        bar.addView(brandBadge())
+        bar.addView(LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            layoutParams = LinearLayout.LayoutParams(0, WRAP, 1f)
+            addView(tv("JacCollector", 16f, TEXT, medium))
+            addView(tv("версия ${BuildConfig.VERSION_NAME}", 11f, DIM))
+        })
+        // "Support" is a heart button in the corner, like in most phone apps
+        bar.addView(LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            isFocusable = true
+            isClickable = true
+            setPadding(dp(12), dp(8), dp(12), dp(8))
+            background = states(focused = shape(PANEL2, Color.WHITE, dp(2), dp(18)),
+                normal = shape(Color.TRANSPARENT, LINE, dp(1), dp(18)))
+            addView(ImageView(this@MainActivity).apply {
+                setImageResource(R.drawable.ic_heart)
+                setColorFilter(Color.rgb(255, 120, 140), PorterDuff.Mode.SRC_IN)
+                layoutParams = LinearLayout.LayoutParams(dp(16), dp(16)).apply { rightMargin = dp(8) }
+            })
+            addView(tv("Поддержать", 13f, TEXT))
+            setOnClickListener { donateDialog() }
+        })
+        return bar
+    }
+
+    private fun buildBottomNav(): ViewGroup {
+        val box = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            setPadding(dp(4), dp(4), dp(4), dp(4))
+        }
+        fun item(p: Page, icon: Int, label: String) {
+            val item = LinearLayout(this).apply {
+                orientation = LinearLayout.VERTICAL
+                gravity = Gravity.CENTER
+                isFocusable = true
+                isClickable = true
+                setPadding(0, dp(6), 0, dp(6))
+                background = states(focused = shape(PANEL2, Color.WHITE, dp(2), dp(12)),
+                    normal = shape(Color.TRANSPARENT, 0, 0, dp(12)))
+                layoutParams = LinearLayout.LayoutParams(0, WRAP, 1f)
+                setOnClickListener { showPage(p) }
+            }
+            // the selected item gets a soft pill behind its icon, as in Material bottom bars
+            val pill = FrameLayout(this).apply {
+                setPadding(dp(18), dp(4), dp(18), dp(4))
+                background = StateListDrawable().apply {
+                    addState(intArrayOf(android.R.attr.state_selected), rounded(Color.rgb(26, 43, 74), dp(14)))
+                    addState(intArrayOf(), rounded(Color.TRANSPARENT, dp(14)))
+                }
+                isDuplicateParentStateEnabled = true
+                layoutParams = LinearLayout.LayoutParams(WRAP, WRAP)
+            }
+            val img = ImageView(this).apply {
+                setImageResource(icon)
+                setColorFilter(MUTED, PorterDuff.Mode.SRC_IN)
+                layoutParams = FrameLayout.LayoutParams(dp(22), dp(22))
+            }
+            pill.addView(img)
+            item.addView(pill)
+            item.addView(tv(label, 12f, 0).apply {
+                setTextColor(ColorStateList(arrayOf(intArrayOf(android.R.attr.state_selected), intArrayOf()), intArrayOf(TEXT, MUTED)))
+                isDuplicateParentStateEnabled = true
+                setPadding(0, dp(4), 0, 0)
+                layoutParams = LinearLayout.LayoutParams(WRAP, WRAP)
+                singleLine()
+            })
+            box.addView(item)
+            navItems[p] = item
+            navIcons[p] = img
+        }
+        item(Page.SOURCES, R.drawable.ic_sources, "Активные")
+        item(Page.CATALOG, R.drawable.ic_globe, "Загрузить")
+        item(Page.LOG, R.drawable.ic_log, "Журнал")
+        item(Page.UPDATES, R.drawable.ic_refresh, "Обновления")
+        return box
+    }
+
     // ---------- side menu ----------
 
     private fun buildRail(): ViewGroup {
         val box = LinearLayout(this).apply {
-            orientation = if (narrow) LinearLayout.HORIZONTAL else LinearLayout.VERTICAL
-            gravity = if (narrow) Gravity.CENTER_VERTICAL else Gravity.NO_GRAVITY
+            orientation = LinearLayout.VERTICAL
             setBackgroundColor(PANEL)
-            if (narrow) setPadding(dp(8), dp(6), dp(8), dp(6)) else setPadding(dp(14), dp(24), dp(14), dp(18))
-            layoutParams = if (narrow) FrameLayout.LayoutParams(WRAP, WRAP) else LinearLayout.LayoutParams(dp(200), MATCH)
+            setPadding(dp(14), dp(24), dp(14), dp(18))
+            layoutParams = LinearLayout.LayoutParams(dp(200), MATCH)
         }
-        if (!narrow) {
+        run {
             val brand = LinearLayout(this).apply {
                 orientation = LinearLayout.HORIZONTAL
                 gravity = Gravity.CENTER_VERTICAL
@@ -225,17 +351,10 @@ class MainActivity : Activity() {
         box.addView(navItem(Page.CATALOG, R.drawable.ic_globe, "Загрузить"))
         box.addView(navItem(Page.LOG, R.drawable.ic_log, "Журнал"))
         box.addView(navItem(Page.UPDATES, R.drawable.ic_refresh, "Обновления"))
-        box.addView(View(this).apply {
-            layoutParams = if (narrow) LinearLayout.LayoutParams(dp(8), 1) else LinearLayout.LayoutParams(1, 0, 1f)
-        })
+        box.addView(View(this).apply { layoutParams = LinearLayout.LayoutParams(1, 0, 1f) })
         updateCard = buildUpdateCard()
         box.addView(updateCard)
-        if (!narrow) return box
-        return HorizontalScrollView(this).apply {
-            isHorizontalScrollBarEnabled = false
-            setBackgroundColor(PANEL)
-            addView(box)
-        }
+        return box
     }
 
     private fun navItem(p: Page?, icon: Int, label: String, onClick: (() -> Unit)? = null): View {
@@ -249,10 +368,7 @@ class MainActivity : Activity() {
                 focused = shape(PANEL2, Color.WHITE, dp(2), dp(8)),
                 selected = shape(PANEL2, 0, 0, dp(8)),
                 normal = shape(Color.TRANSPARENT, 0, 0, dp(8)))
-            layoutParams = LinearLayout.LayoutParams(if (narrow) WRAP else MATCH, WRAP).apply {
-                bottomMargin = if (narrow) 0 else dp(4)
-                rightMargin = if (narrow) dp(4) else 0
-            }
+            layoutParams = LinearLayout.LayoutParams(MATCH, WRAP).apply { bottomMargin = dp(4) }
             setOnClickListener { if (p != null) showPage(p) else onClick?.invoke() }
         }
         val img = ImageView(this).apply {
@@ -266,7 +382,7 @@ class MainActivity : Activity() {
                 arrayOf(intArrayOf(android.R.attr.state_selected), intArrayOf(android.R.attr.state_focused), intArrayOf()),
                 intArrayOf(TEXT, TEXT, MUTED)))
             isDuplicateParentStateEnabled = true
-            layoutParams = LinearLayout.LayoutParams(if (narrow) WRAP else 0, WRAP, if (narrow) 0f else 1f)
+            layoutParams = LinearLayout.LayoutParams(0, WRAP, 1f)
         })
         if (p != null) {
             val count = tv("", 11f, DIM).apply { setPadding(dp(8), 0, 0, 0) }
@@ -281,22 +397,31 @@ class MainActivity : Activity() {
     /** Calm card at the bottom of the menu while a downloaded update waits to be installed. */
     private fun buildUpdateCard(): View {
         val card = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
+            orientation = if (narrow) LinearLayout.HORIZONTAL else LinearLayout.VERTICAL
+            gravity = if (narrow) Gravity.CENTER_VERTICAL else Gravity.NO_GRAVITY
             isFocusable = true
             isClickable = true
             setPadding(dp(12), dp(10), dp(12), dp(10))
             background = states(
                 focused = shape(Color.rgb(20, 33, 58), Color.WHITE, dp(2), dp(10)),
                 normal = shape(Color.rgb(20, 33, 58), Color.rgb(44, 74, 124), dp(1), dp(10)))
-            layoutParams = LinearLayout.LayoutParams(if (narrow) WRAP else MATCH, WRAP).apply {
-                topMargin = if (narrow) 0 else dp(8)
+            layoutParams = LinearLayout.LayoutParams(MATCH, WRAP).apply {
+                if (narrow) { leftMargin = dp(12); rightMargin = dp(12); bottomMargin = dp(10) } else topMargin = dp(8)
             }
             visibility = View.GONE
             setOnClickListener { onUpdatePressed() }
         }
         updateTitle = tv("", 13f, Color.rgb(207, 224, 255), medium)
-        card.addView(updateTitle)
-        if (!narrow) card.addView(tv("OK — установить", 11f, Color.rgb(143, 169, 214)))
+        if (narrow) {
+            card.addView(updateTitle.apply { layoutParams = LinearLayout.LayoutParams(0, WRAP, 1f) })
+            card.addView(tv("Установить", 13f, Color.WHITE, medium).apply {
+                background = rounded(ACCENT, dp(8))
+                setPadding(dp(14), dp(6), dp(14), dp(6))
+            })
+        } else {
+            card.addView(updateTitle)
+            card.addView(tv("OK — установить", 11f, Color.rgb(143, 169, 214)))
+        }
         return card
     }
 
@@ -325,7 +450,7 @@ class MainActivity : Activity() {
     private fun pageFrame(title: String, subtitle: String, actions: List<View> = emptyList()): LinearLayout {
         val outer = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            if (narrow) setPadding(dp(14), dp(14), dp(14), dp(10)) else setPadding(dp(28), dp(18), dp(28), dp(14))
+            if (narrow) setPadding(dp(16), dp(16), dp(16), dp(10)) else setPadding(dp(28), dp(18), dp(28), dp(14))
             layoutParams = FrameLayout.LayoutParams(MATCH, MATCH)
         }
         val head = LinearLayout(this).apply {
@@ -345,7 +470,14 @@ class MainActivity : Activity() {
                 if (narrow) setPadding(0, dp(10), 0, 0)
             }
             actions.forEachIndexed { i, b ->
-                (b.layoutParams as? LinearLayout.LayoutParams)?.leftMargin = if (i == 0 && narrow) 0 else dp(10)
+                if (narrow) {
+                    // phone: the buttons share the full width
+                    b.layoutParams = LinearLayout.LayoutParams(0, WRAP, 1f).apply { leftMargin = if (i == 0) 0 else dp(10) }
+                    (b as? TextView)?.apply { singleLine(); centerContent() }
+                    (b as? LinearLayout)?.gravity = Gravity.CENTER_VERTICAL
+                } else {
+                    (b.layoutParams as? LinearLayout.LayoutParams)?.leftMargin = dp(10)
+                }
                 btns.addView(b)
             }
             head.addView(btns)
@@ -359,8 +491,8 @@ class MainActivity : Activity() {
     private fun sourcesPage(): View {
         val outer = pageFrame("Активные серверы",
             "Все JacRed — в одном поиске для плееров",
-            listOf(button("Проверить связь", R.drawable.ic_pulse) { probe(it) },
-                button("Добавить источник", R.drawable.ic_plus, primary = true) { addSourceDialog() }))
+            listOf(button(if (narrow) "Проверить" else "Проверить связь", R.drawable.ic_pulse) { probe(it) },
+                button(if (narrow) "Добавить" else "Добавить источник", R.drawable.ic_plus, primary = true) { addSourceDialog() }))
 
         // strip of figures: server address, working sources, results, waiting time
         val strip = LinearLayout(this).apply {
@@ -378,7 +510,21 @@ class MainActivity : Activity() {
         // the home-network address sits on the same line, to keep the strip low
         serverLan = tv("", 11f, DIM).apply { setPadding(dp(12), 0, 0, 0); singleLine() }.also { addrRow.addView(it) }
         t1.addView(addrRow)
-        t1.addView(tv("В плеере: Jackett — этот адрес, ключ любой", 11f, MUTED).apply { setPadding(0, dp(4), 0, 0); singleLine() })
+        if (narrow) {
+            // on a phone the address is copied with a tap, to paste it into the player
+            t1.addView(tv("В плеере: Jackett — этот адрес, ключ любой. Нажмите, чтобы скопировать", 11f, MUTED)
+                .apply { setPadding(0, dp(4), 0, 0) })
+            t1.isClickable = true
+            t1.isFocusable = true
+            t1.background = states(focused = shape(PANEL2, Color.WHITE, dp(2), dp(12)), normal = shape(Color.TRANSPARENT, 0, 0, dp(12)))
+            t1.setOnClickListener {
+                val cm = getSystemService(Context.CLIPBOARD_SERVICE) as android.content.ClipboardManager
+                cm.setPrimaryClip(android.content.ClipData.newPlainText("Jackett", "127.0.0.1:${Store.PORT}"))
+                Toast.makeText(this, "Скопировано: 127.0.0.1:${Store.PORT}", Toast.LENGTH_SHORT).show()
+            }
+        } else {
+            t1.addView(tv("В плеере: Jackett — этот адрес, ключ любой", 11f, MUTED).apply { setPadding(0, dp(4), 0, 0); singleLine() })
+        }
         strip.addView(t1)
         val t2 = tile("Работают", 1f)
         workValue = tv("—", 18f, TEXT, medium).also { t2.addView(it) }
@@ -395,7 +541,22 @@ class MainActivity : Activity() {
         // inside a wrap_content strip would stretch it to the whole screen)
         strip.dividerDrawable = GradientDrawable().apply { setColor(LINE); setSize(dp(1), dp(1)) }
         strip.showDividers = LinearLayout.SHOW_DIVIDER_MIDDLE
-        for (t in listOf(t2, t3, t4)) strip.addView(t)
+        if (narrow) {
+            // phone: the address on its own line, the three figures side by side under it
+            val figures = LinearLayout(this).apply {
+                orientation = LinearLayout.HORIZONTAL
+                dividerDrawable = GradientDrawable().apply { setColor(LINE); setSize(dp(1), dp(1)) }
+                showDividers = LinearLayout.SHOW_DIVIDER_MIDDLE
+            }
+            for (t in listOf(t2, t3, t4)) {
+                t.layoutParams = LinearLayout.LayoutParams(0, WRAP, 1f)
+                t.setPadding(dp(14), dp(10), dp(8), dp(10))
+                figures.addView(t)
+            }
+            strip.addView(figures)
+        } else {
+            for (t in listOf(t2, t3, t4)) strip.addView(t)
+        }
         outer.addView(strip)
 
         val sec = LinearLayout(this).apply {
@@ -424,7 +585,10 @@ class MainActivity : Activity() {
             addView(sourcesList)
         })
         outer.addView(table)
-        outer.addView(tv("OK на сервере — подробности, выключить или удалить  ·  OK на «Ждать» — сколько ждать ответа источников", 11f, DIM).apply { setPadding(0, dp(8), 0, 0); singleLine() })
+        outer.addView(if (narrow)
+            tv("Нажмите на сервер — подробности, выключить или удалить. «Ждать» — сколько ждать ответа источников", 11f, DIM).apply { setPadding(0, dp(8), 0, 0) }
+        else
+            tv("OK на сервере — подробности, выключить или удалить  ·  OK на «Ждать» — сколько ждать ответа источников", 11f, DIM).apply { setPadding(0, dp(8), 0, 0); singleLine() })
         buildSources()
         updateDeadline()
         return outer
@@ -493,9 +657,31 @@ class MainActivity : Activity() {
         nameCol.addView(sub)
         row.addView(nameCol)
         if (narrow) {
-            val state = tv("", 12f, MUTED).apply { gravity = Gravity.END }
-            row.addView(state)
-            rows[src.name] = Row(d, name, sub, null, null, null, null, state)
+            // phone card: name and state on top, address under it, then languages · results · response time
+            nameCol.removeAllViews()
+            row.gravity = Gravity.TOP
+            row.minimumHeight = dp(64)
+            row.setPadding(dp(14), dp(12), dp(14), dp(12))
+            (d.parent as View).setPadding(0, dp(6), 0, 0)
+            val top =LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL }
+            top.addView(name.apply { layoutParams = LinearLayout.LayoutParams(0, WRAP, 1f) })
+            val state = tv("", 12f, MUTED).apply { setPadding(dp(10), 0, 0, 0); singleLine() }
+            top.addView(state)
+            nameCol.addView(top)
+            nameCol.addView(sub.apply { setPadding(0, dp(2), 0, 0) })
+            val meta = LinearLayout(this).apply {
+                orientation = LinearLayout.HORIZONTAL
+                gravity = Gravity.CENTER_VERTICAL
+                setPadding(0, dp(6), 0, 0)
+            }
+            val langs = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+            meta.addView(langs)
+            val count = tv("", 12f, TEXT).apply { setPadding(dp(4), 0, 0, 0) }
+            meta.addView(count)
+            val lat = tv("", 12f, MUTED).apply { setPadding(dp(10), 0, 0, 0) }
+            meta.addView(lat)
+            nameCol.addView(meta)
+            rows[src.name] = Row(d, name, sub, langs, count, null, lat, state)
             return row
         }
         val langs = LinearLayout(this).apply {
@@ -581,9 +767,17 @@ class MainActivity : Activity() {
             }
             r.sub.text = (listOf(src.url) + extra).joinToString("  ·  ")
             val answered = good && st!!.lastCount >= 0
-            r.count?.text = if (answered) "%,d".format(st!!.lastCount).replace(',', ' ') else "—"
+            val countText = if (answered) "%,d".format(st!!.lastCount).replace(',', ' ') else "—"
+            if (narrow) {
+                // phone card: "1 234 раздач   420 мс", nothing until the server answered
+                r.count?.text = if (answered) "$countText раздач" else ""
+                r.lat?.text = if (answered) "${st!!.lastMs} мс" else ""
+                r.lat?.setTextColor(when { !answered -> DIM; st!!.lastMs < 600 -> OK; st.lastMs < 1200 -> WARN; else -> BAD })
+            } else {
+                r.count?.text = countText
+                r.lat?.text = if (answered) "${st!!.lastMs} мс" else "—"
+            }
             r.count?.setTextColor(if (answered) TEXT else DIM)
-            r.lat?.text = if (answered) "${st!!.lastMs} мс" else "—"
             r.barFill?.let { f ->
                 val ms = if (answered) st!!.lastMs else 0L
                 val lp = f.layoutParams
@@ -746,14 +940,16 @@ class MainActivity : Activity() {
     }
 
     private fun updateDeadline() {
-        deadlineValue?.text = "%.1f сек".format(Store.deadlineMs(this) / 1000.0)
+        // on a phone a chevron hints that the tile is tapped to change it
+        deadlineValue?.text = "%.1f сек".format(Store.deadlineMs(this) / 1000.0) + if (narrow) "  ›" else ""
     }
 
     // ---------- page: shared list ----------
 
     private fun catalogPage(): View {
         val outer = pageFrame("Загрузить из общего списка",
-            "Серверы, которые нашли и проверили другие пользователи. OK — подключить или убрать",
+            "Серверы, которые нашли и проверили другие пользователи. " +
+                (if (narrow) "Нажмите на сервер — подключить или убрать" else "OK — подключить или убрать"),
             listOf(shareToggle()))
         if (!Store.shareEnabled(this)) {
             outer.addView(shareExplain())
@@ -794,13 +990,14 @@ class MainActivity : Activity() {
         })
         // the legend stays put at the bottom, however long the list is
         val legend = LinearLayout(this).apply {
-            orientation = LinearLayout.HORIZONTAL
-            gravity = Gravity.CENTER_VERTICAL
+            // a phone has no room for both on one line
+            orientation = if (narrow) LinearLayout.VERTICAL else LinearLayout.HORIZONTAL
+            gravity = if (narrow) Gravity.NO_GRAVITY else Gravity.CENTER_VERTICAL
             setPadding(dp(16), dp(10), dp(16), dp(10))
             background = shape(PANEL, 0, 0, dp(11))
         }
         legend.addView(tv("Оценка 0–10 по проверкам приставок, в скобках — сколько их было", 11f, MUTED).apply {
-            layoutParams = LinearLayout.LayoutParams(0, WRAP, 1f)
+            layoutParams = if (narrow) LinearLayout.LayoutParams(MATCH, WRAP) else LinearLayout.LayoutParams(0, WRAP, 1f)
         })
         catalogFooter = tv("", 11f, DIM).also { legend.addView(it) }
         table.addView(View(this).apply { setBackgroundColor(LINE); layoutParams = LinearLayout.LayoutParams(MATCH, dp(1)) })
@@ -890,7 +1087,7 @@ class MainActivity : Activity() {
         val scoreBox = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.BOTTOM
-            layoutParams = col(if (narrow) dp(64) else dp(84))
+            layoutParams = col(if (narrow) dp(54) else dp(84))
         }
         val scoreColor = when { r == null -> DIM; e.dead -> DIM; r.score >= 7 -> TEXT; r.score >= 4 -> WARN; else -> BAD }
         scoreBox.addView(tv(r?.score?.toString() ?: "—", 18f, scoreColor, medium))
@@ -903,7 +1100,13 @@ class MainActivity : Activity() {
         }
         val nameLine = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL }
         nameLine.addView(tv(e.name, 15f, if (e.dead) DIM else TEXT, medium).apply { singleLine() })
-        if (e.recommended) nameLine.addView(TextView(this).apply {
+        // on a phone the badge goes to the second line, so a long name is not squeezed
+        val badgeLine = if (narrow) LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            setPadding(0, dp(3), 0, 0)
+        } else nameLine
+        if (e.recommended) badgeLine.addView(TextView(this).apply {
             text = "РЕКОМЕНДУЕМ"
             textSize = 9f
             letterSpacing = 0.08f
@@ -911,12 +1114,15 @@ class MainActivity : Activity() {
             setTextColor(Color.rgb(207, 224, 255))
             background = rounded(Color.rgb(26, 43, 74), dp(4))
             setPadding(dp(6), dp(2), dp(6), dp(2))
-            layoutParams = LinearLayout.LayoutParams(WRAP, WRAP).apply { leftMargin = dp(10) }
+            layoutParams = LinearLayout.LayoutParams(WRAP, WRAP).apply { if (narrow) rightMargin = dp(8) else leftMargin = dp(10) }
         })
         nameCol.addView(nameLine)
         val langs = e.lang.split(',').filter { it.isNotBlank() }.map(::langLabel)
-        if (narrow) nameCol.addView(tv(langs.joinToString(" · ") + if (e.dead) "  ·  не отвечает" else "",
-            11f, if (e.dead) BAD else DIM))
+        if (narrow) {
+            badgeLine.addView(tv(langs.joinToString(" · ") + if (e.dead) "  ·  не отвечает" else "",
+                11f, if (e.dead) BAD else DIM).apply { singleLine() })
+            nameCol.addView(badgeLine)
+        }
         row.addView(nameCol)
         if (!narrow) {
             row.addView(LinearLayout(this).apply {
@@ -938,7 +1144,7 @@ class MainActivity : Activity() {
         }
         row.addView(LinearLayout(this).apply {
             gravity = Gravity.END or Gravity.CENTER_VERTICAL
-            layoutParams = col(dp(140))
+            layoutParams = if (narrow) LinearLayout.LayoutParams(WRAP, WRAP).apply { leftMargin = dp(8) } else col(dp(140))
             addView(action)
         })
         fun showAction() {
@@ -1018,21 +1224,22 @@ class MainActivity : Activity() {
             tv("Проверяется само раз в сутки и при открытии приложения", 12f, MUTED), checkBtn))
         installTitle = tv("", 15f, TEXT, medium)
         installRow = LinearLayout(this).apply {
-            orientation = LinearLayout.HORIZONTAL
-            gravity = Gravity.CENTER_VERTICAL
+            orientation = if (narrow) LinearLayout.VERTICAL else LinearLayout.HORIZONTAL
+            gravity = if (narrow) Gravity.NO_GRAVITY else Gravity.CENTER_VERTICAL
             setPadding(dp(16), dp(14), dp(16), dp(14))
             background = shape(Color.rgb(20, 33, 58), Color.rgb(44, 74, 124), dp(1), dp(12))
             layoutParams = LinearLayout.LayoutParams(MATCH, WRAP).apply { topMargin = dp(10) }
             visibility = View.GONE
             addView(LinearLayout(this@MainActivity).apply {
                 orientation = LinearLayout.VERTICAL
-                layoutParams = LinearLayout.LayoutParams(0, WRAP, 1f).apply { rightMargin = dp(16) }
+                layoutParams = if (narrow) LinearLayout.LayoutParams(MATCH, WRAP).apply { bottomMargin = dp(12) }
+                else LinearLayout.LayoutParams(0, WRAP, 1f).apply { rightMargin = dp(16) }
                 addView(installTitle)
                 addView(tv("Уже скачана и проверена: это JacCollector с той же подписью", 12f,
                     Color.rgb(143, 169, 214)).apply { setPadding(0, dp(3), 0, 0) })
             })
             addView(button("Установить", R.drawable.ic_plus, primary = true) { onUpdatePressed() }
-                .apply { (layoutParams as LinearLayout.LayoutParams).leftMargin = 0 })
+                .apply { layoutParams = LinearLayout.LayoutParams(WRAP, WRAP) })
         }
         outer.addView(installRow)
         return outer
@@ -1056,7 +1263,10 @@ class MainActivity : Activity() {
             setPadding(dp(16), dp(9), dp(12), dp(9))
             background = states(focused = shape(PANEL2, Color.WHITE, dp(2), dp(8)), normal = shape(PANEL2, LINE, dp(1), dp(8)))
             layoutParams = LinearLayout.LayoutParams(WRAP, WRAP).apply { leftMargin = dp(10) }
-            addView(tv("Общий список", 14f, TEXT, medium))
+            // on a phone the button spans the width: label on the left, ON/OFF on the right
+            addView(tv("Общий список", 14f, TEXT, medium).apply {
+                if (narrow) layoutParams = LinearLayout.LayoutParams(0, WRAP, 1f)
+            })
             addView(switchPill)
             setOnClickListener { onCommunityToggle(!Store.shareEnabled(this@MainActivity)) }
         }
@@ -1081,7 +1291,8 @@ class MainActivity : Activity() {
             13f, DIM).apply { setPadding(0, dp(8), 0, 0); setLineSpacing(0f, 1.15f) }
         box.addView(shareOnText)
         box.addView(shareOffText)
-        box.addView(tv("Включить — кнопка «Общий список» справа вверху.", 12f, MUTED).apply { setPadding(0, dp(12), 0, 0) })
+        box.addView(tv(if (narrow) "Включить — кнопка «Общий список» выше." else "Включить — кнопка «Общий список» справа вверху.",
+            12f, MUTED).apply { setPadding(0, dp(12), 0, 0) })
         updateSwitch()
         return box
     }
@@ -1107,11 +1318,19 @@ class MainActivity : Activity() {
         }
         row.addView(LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            layoutParams = LinearLayout.LayoutParams(0, WRAP, 1f).apply { rightMargin = dp(16) }
+            layoutParams = if (narrow) LinearLayout.LayoutParams(MATCH, WRAP)
+            else LinearLayout.LayoutParams(0, WRAP, 1f).apply { rightMargin = dp(16) }
             addView(tv(title, 15f, TEXT, medium))
             addView(sub.apply { setPadding(0, dp(3), 0, 0) })
         })
-        (control.layoutParams as? LinearLayout.LayoutParams)?.leftMargin = 0
+        if (narrow) {
+            // phone: the button goes under the text
+            row.orientation = LinearLayout.VERTICAL
+            row.gravity = Gravity.NO_GRAVITY
+            control.layoutParams = LinearLayout.LayoutParams(WRAP, WRAP).apply { topMargin = dp(12) }
+        } else {
+            (control.layoutParams as? LinearLayout.LayoutParams)?.leftMargin = 0
+        }
         row.addView(control)
         return row
     }
@@ -1191,11 +1410,12 @@ class MainActivity : Activity() {
         fun column(title: String, url: String, qr: Int) = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             gravity = Gravity.CENTER_HORIZONTAL
-            setPadding(dp(24), 0, dp(24), 0)
+            if (narrow) setPadding(dp(8), 0, dp(8), 0) else setPadding(dp(24), 0, dp(24), 0)
             addView(tv(title, 18f, Color.WHITE, medium).apply { gravity = Gravity.CENTER })
+            val side = if (narrow) dp(110) else dp(180)
             addView(ImageView(this@MainActivity).apply {
                 setImageResource(qr)
-                layoutParams = LinearLayout.LayoutParams(dp(180), dp(180)).apply { topMargin = dp(8); bottomMargin = dp(8) }
+                layoutParams = LinearLayout.LayoutParams(side, side).apply { topMargin = dp(8); bottomMargin = dp(8) }
             })
             addView(tv(url.removePrefix("https://"), 13f, Color.LTGRAY).apply { gravity = Gravity.CENTER })
             addView(button("Открыть", null) { openLink(url) }.apply {
@@ -1206,7 +1426,8 @@ class MainActivity : Activity() {
         box.addView(column("Ko-fi", KOFI, R.drawable.qr_kofi))
         val wrap = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            addView(tv("Наведите камеру телефона на QR-код. Спасибо!", 14f, Color.LTGRAY).apply {
+            addView(tv(if (narrow) "Нажмите «Открыть» под нужным сервисом. Спасибо!"
+                else "Наведите камеру телефона на QR-код. Спасибо!", 14f, Color.LTGRAY).apply {
                 gravity = Gravity.CENTER
                 setPadding(dp(16), dp(8), dp(16), 0)
             })
@@ -1281,6 +1502,16 @@ class MainActivity : Activity() {
         setTextColor(color)
         if (face != null) typeface = face
         includeFontPadding = true
+    }
+
+    /** Icon and text together in the middle of a stretched button (gravity alone leaves the icon at the edge). */
+    private fun TextView.centerContent() {
+        addOnLayoutChangeListener { v, l, _, r, _, _, _, _, _ ->
+            val tvw = v as TextView
+            val icon = tvw.compoundDrawables[0]?.bounds?.width()?.plus(tvw.compoundDrawablePadding) ?: 0
+            val side = maxOf(dp(8), ((r - l) - icon - tvw.paint.measureText(tvw.text.toString()).toInt()) / 2)
+            if (tvw.paddingLeft != side) v.post { tvw.setPadding(side, tvw.paddingTop, side, tvw.paddingBottom) }
+        }
     }
 
     private fun TextView.singleLine() {

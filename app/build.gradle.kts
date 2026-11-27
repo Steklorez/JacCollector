@@ -14,8 +14,8 @@ android {
         minSdk = 21
         targetSdk = 35
         // overridable only for update tests: -PvCode=... -PvName=...
-        versionCode = (project.findProperty("vCode") as String?)?.toInt() ?: 9
-        versionName = (project.findProperty("vName") as String?) ?: "1.1.6"
+        versionCode = (project.findProperty("vCode") as String?)?.toInt() ?: 10
+        versionName = (project.findProperty("vName") as String?) ?: "1.1.7"
         // Where the public list lives. Override for tests: build.cmd release -PlistUrl=http://...
         val listUrl = (project.findProperty("listUrl") as String?)
             ?: "https://raw.githubusercontent.com/Steklorez/JacCollector/main/sources.json"
