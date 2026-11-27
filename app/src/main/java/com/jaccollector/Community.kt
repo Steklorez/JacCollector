@@ -21,9 +21,9 @@ object Community {
     private const val COMMIT_URL =
         "https://firestore.googleapis.com/v1/projects/$PROJECT/databases/(default)/documents:commit"
     private const val DOC_PREFIX = "projects/$PROJECT/databases/(default)/documents/submissions/"
-    val LIST_URL: String = BuildConfig.LIST_URL
-    /** Shared rating, rebuilt daily from the health reports by a GitHub Action (branch "stats"). */
-    val RATINGS_URL: String = BuildConfig.RATINGS_URL
+    val LIST_URL: String = Hidden.open(BuildConfig.LIST_URL)
+    /** Shared rating, rebuilt every 6 hours from the health reports by a GitHub Action. */
+    val RATINGS_URL: String = Hidden.open(BuildConfig.RATINGS_URL)
     private const val SYNC_EVERY_MS = 24 * 60 * 60 * 1000L
     private const val CATALOG_TTL_MS = 10 * 60 * 1000L
 

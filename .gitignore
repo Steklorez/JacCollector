@@ -15,3 +15,5 @@ keystore/
 forum/
 jc-token.txt
 design/
+list/
+list.properties
