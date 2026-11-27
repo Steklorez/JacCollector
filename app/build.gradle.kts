@@ -22,8 +22,8 @@ android {
         minSdk = 21
         targetSdk = 35
         // overridable only for update tests: -PvCode=... -PvName=...
-        versionCode = (project.findProperty("vCode") as String?)?.toInt() ?: 11
-        versionName = (project.findProperty("vName") as String?) ?: "1.1.8"
+        versionCode = (project.findProperty("vCode") as String?)?.toInt() ?: 10
+        versionName = (project.findProperty("vName") as String?) ?: "1.1.7"
         // Where the public list and the rating live. The real addresses are in list.properties
         // (not in git) and go into the APK scrambled, so they are not lying in plain sight.
         // Without that file (forks) the frozen copies in this repository are used.

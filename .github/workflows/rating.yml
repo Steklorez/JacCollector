@@ -1,6 +1,8 @@
-# Every 6 hours (GitHub sometimes skips scheduled runs, so a missed one costs little): rebuild the shared server rating from the health reports and publish it as
-# ratings.json on the "stats" branch (the app downloads it from raw.githubusercontent.com).
-# It only reads Firestore (read-only key) and replaces that one file; nothing else is touched.
+# Every 6 hours (GitHub sometimes skips scheduled runs, so a missed one costs little): rebuild the
+# shared server rating from the health reports and publish it as ratings.json next to the shared
+# list. Where that is (GIST_ID) and the key to update it (GIST_TOKEN) are repository secrets, so
+# they do not show up here or in the public run logs.
+# The old ratings.json on the "stats" branch is frozen: it is kept only for old app versions.
 name: rating
 
 on:
@@ -9,7 +11,7 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: write   # needed only to push the "stats" branch
+  contents: read
   actions: write    # needed only to keep this schedule switched on (step "Keep alive")
 
 concurrency:
@@ -34,15 +36,14 @@ jobs:
         run: |
           mkdir out
           python tools/rating.py out/ratings.json
-      - name: Publish to the stats branch
+      # Only this step gets the gist key; it replaces that one file and nothing else.
+      - name: Publish
+        env:
+          GH_TOKEN: ${{ secrets.GIST_TOKEN }}
+          GIST_ID: ${{ secrets.GIST_ID }}
         run: |
-          cd out
-          git init -q -b stats
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add ratings.json
-          git commit -q -m "Rating $(date -u +%Y-%m-%d)"
-          git push -q --force "https://x-access-token:${{ github.token }}@github.com/${{ github.repository }}.git" stats
+          python -c "import json; print(json.dumps({'files': {'ratings.json': {'content': open('out/ratings.json').read()}}}))" > out/patch.json
+          gh api -X PATCH "gists/$GIST_ID" --input out/patch.json --silent
       # GitHub switches scheduled workflows off after 60 days without commits. Re-enabling it
       # through the API on every run resets that timer, so the rating keeps updating by itself.
       - name: Keep alive
